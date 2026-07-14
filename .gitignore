@@ -36,6 +36,9 @@ temp/
 
 # User configuration (contains sensitive data)
 .imap-mcp/
+
+# Local nix gcroots (machine-specific pinned toolchain)
+.nix-gcroots/
 # MCP Registry publisher OAuth tokens
 .mcpregistry_github_token
 .mcpregistry_registry_token
