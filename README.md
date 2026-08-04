@@ -106,6 +106,57 @@ This will:
 2. Open your browser to the setup wizard
 3. Guide you through adding email accounts with pre-configured settings
 
+### Overriding Credentials via Environment Variables
+
+You can override the username and password of an already-configured account at
+runtime with environment variables — useful when you inject secrets from a
+password manager or CI system instead of storing them in `accounts.json`.
+
+The variables are keyed by the account **name**, uppercased with every
+non-alphanumeric character replaced by `_`. For an account named `Work Gmail`
+(key `WORK_GMAIL`):
+
+| Variable | Overrides |
+| --- | --- |
+| `IMAP_MCP_ACCOUNT_WORK_GMAIL_IMAP_USERNAME` | IMAP username (`user`) |
+| `IMAP_MCP_ACCOUNT_WORK_GMAIL_IMAP_PASSWORD` | IMAP password |
+| `IMAP_MCP_ACCOUNT_WORK_GMAIL_SMTP_USERNAME` | SMTP username (`smtp.user`) |
+| `IMAP_MCP_ACCOUNT_WORK_GMAIL_SMTP_PASSWORD` | SMTP password |
+
+Notes:
+- Overrides apply **only to existing accounts**; if no account's normalized name
+  matches, the variable is ignored.
+- They are applied **in memory only** — nothing is written back to
+  `accounts.json`, and the values are used as-is (not re-encrypted).
+- Variables are **consumed at startup**: on server start they are captured into
+  an AES-256-encrypted in-memory cache and removed from `process.env`, so the
+  plaintext secret does not linger in the environment (where it could leak to
+  child processes or diagnostics). Set them before launching the server.
+
+The setup wizard integrates with this: each credential field (IMAP password,
+IMAP username, SMTP username, SMTP password) has a **"Do not save to config; set
+later using an environment variable"** checkbox. When ticked, the value you enter
+is still used to test the connection, but it is not written to `accounts.json` —
+the wizard shows the exact variable name to export, and the account picks the
+credential up from that variable at runtime.
+- SMTP variables take effect only when the account already has an SMTP config.
+- Each variable takes effect independently; set only the ones you need.
+
+**If the variable is missing**, the account still holds the empty placeholder the
+wizard wrote. Rather than dialing out with a blank credential — which providers
+answer with a generic authentication failure that looks exactly like a wrong
+password — the server refuses the connection and names what to set:
+
+```
+Account "Work Gmail" has IMAP credentials marked as environment-managed, but
+this variable was not set when the server started:
+IMAP_MCP_ACCOUNT_WORK_GMAIL_IMAP_PASSWORD. Set it and restart the server, or
+store the credentials on the account via imap_update_account.
+```
+
+Because the variables are read once at startup, setting one in an already-running
+shell has no effect until the server is restarted.
+
 ### Supported Email Providers
 
 The setup wizard includes pre-configured settings for:

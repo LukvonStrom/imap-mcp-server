@@ -15,6 +15,20 @@ working in this repository.
   - `SmtpService` — outbound mail via **`nodemailer`**; composes raw MIME and sends.
   - `AccountManager` — account CRUD with **AES-256-CBC** encrypted credential
     storage at `~/.imap-mcp/accounts.json` (key at `~/.imap-mcp/.key`).
+    Credentials can be overridden at read time via environment variables keyed
+    by the account's normalized name (uppercase, non-alphanumeric → `_`):
+    `IMAP_MCP_ACCOUNT_<NAME>_IMAP_USERNAME` / `_IMAP_PASSWORD` and
+    `IMAP_MCP_ACCOUNT_<NAME>_SMTP_USERNAME` / `_SMTP_PASSWORD`. Overrides are
+    in-memory only (never persisted) and apply only to existing accounts. The
+    variables are consumed at startup (constructor): captured into an
+    AES-256-encrypted in-memory cache and deleted from `process.env` so the
+    plaintext secret does not linger in the environment. An empty credential is
+    the marker for "env-managed"; `assertCredentialsResolved`
+    (`src/utils/env-credentials.ts`) is called from `ImapService.connect` and
+    `SmtpService.createTransporter` and fails with the missing variable's name
+    instead of dialing out blank. Keep `envVarName()` in sync with its copy in
+    `public/js/app.js` (the wizard is a static asset and cannot import it) —
+    `tests/env-credentials.test.ts` asserts the two agree.
   - `SpamService` — disposable/known-spam domain detection.
 - **Tools** (`src/tools/`), grouped by area:
   - `account-tools.ts` — add / update / list / remove / connect / disconnect / test.
@@ -41,7 +55,7 @@ npm run setup        # launch the web setup wizard
 ```
 
 Always run `npm run build` **and** `npm test` before committing changes that
-touch `src/`. Keep the suite green (currently 312 tests).
+touch `src/`. Keep the suite green (currently 342 tests).
 
 > Note: `npm run lint` (`tsc --noEmit`) is memory-hungry on this project — the
 > MCP SDK's `registerTool` generics are deep enough to surface a pre-existing
