@@ -21,6 +21,7 @@ export function accountTools(
       password: z.string().describe('Password for authentication'),
       tls: z.boolean().default(true).describe('Use TLS/SSL (default: true)'),
       allowStartTLS: z.boolean().optional().describe('When tls is false, imapflow still opportunistically upgrades via STARTTLS if the server advertises it, validating the cert against `host` regardless of `tls`. Set to false to disable that upgrade and stay on the plain connection — needed for providers (e.g. some DreamHost mail hosting) that advertise STARTTLS on a hostname covered only by a shared/wildcard cert. Defaults to true. WARNING: combined with tls:false this sends the password and all mail in cleartext — only use on a trusted or local network, and try fixing tls/host first.'),
+      tlsRejectUnauthorized: z.boolean().optional().describe('Reject unauthorized TLS certificates (self-signed, expired, etc.). Set to false to allow connections to servers with invalid certificates. Default: true. WARNING: disabling validation allows man-in-the-middle interception of the password and all mail; only use for a trusted internal/self-hosted server, never for a public provider.'),
       email: z.string().optional().describe('Email address (From: header). Defaults to user if omitted'),
       smtpHost: z.string().optional().describe('SMTP server hostname. Defaults to IMAP host with imap.→smtp. rewrite'),
       smtpPort: z.coerce.number().optional().describe('SMTP server port (465 for SMTPS, 587 for STARTTLS). Defaults to 587'),
@@ -28,7 +29,7 @@ export function accountTools(
       sentFolder: z.string().optional().describe('Explicit Sent-folder name for saving sent-mail copies (e.g. "Gesendet"). Only needed when auto-detection fails — the server must lack a \\Sent SPECIAL-USE folder. Check names with imap_list_folders'),
       defaultBcc: z.union([z.string(), z.array(z.string())]).optional().describe('Optional BCC address(es) applied automatically to every outbound send, reply, forward, and draft for this account. Merged with any per-call bcc'),
     }
-  }, async ({ name, host, port, user, password, tls, allowStartTLS, email, smtpHost, smtpPort, smtpSecure, sentFolder, defaultBcc }) => {
+  }, async ({ name, host, port, user, password, tls, allowStartTLS, tlsRejectUnauthorized, email, smtpHost, smtpPort, smtpSecure, sentFolder, defaultBcc }) => {
     const smtp = (smtpHost || smtpPort !== undefined || smtpSecure !== undefined)
       ? {
           host: smtpHost || host,
@@ -45,6 +46,7 @@ export function accountTools(
       password,
       tls,
       ...(allowStartTLS !== undefined ? { allowStartTLS } : {}),
+      ...(tlsRejectUnauthorized !== undefined ? { tlsRejectUnauthorized } : {}),
       ...(email ? { email } : {}),
       ...(smtp ? { smtp } : {}),
       ...(sentFolder ? { sentFolder } : {}),
@@ -77,6 +79,7 @@ export function accountTools(
       password: z.string().optional().describe('New password'),
       tls: z.boolean().optional().describe('Use TLS for IMAP'),
       allowStartTLS: z.boolean().optional().describe('When tls is false, set to false to also disable imapflow\'s opportunistic STARTTLS upgrade (see imap_add_account). Defaults to true. WARNING: with tls:false this means a fully cleartext session (password included) — only on a trusted network.'),
+      tlsRejectUnauthorized: z.boolean().optional().describe('Reject unauthorized TLS certificates (self-signed, expired, etc.). Set to false to allow connections to servers with invalid certificates. WARNING: disabling validation allows man-in-the-middle interception of the password and all mail; only use for a trusted internal/self-hosted server, never for a public provider.'),
       email: z.string().optional().describe('Email address (From: header)'),
       smtpHost: z.string().optional().describe('SMTP hostname'),
       smtpPort: z.coerce.number().optional().describe('SMTP port (465 for SMTPS, 587 for STARTTLS)'),
@@ -87,7 +90,7 @@ export function accountTools(
       sentFolder: z.string().optional().describe('Explicit Sent-folder name for saving sent-mail copies (e.g. "Gesendet"). Overrides auto-detection; pass an empty string to clear the override and re-enable auto-detection. Check names with imap_list_folders'),
       defaultBcc: z.union([z.string(), z.array(z.string())]).optional().describe('Optional BCC address(es) applied automatically to every outbound message for this account. Pass an empty string to clear'),
     }
-  }, async ({ accountId, name, host, port, user, password, tls, allowStartTLS, email, smtpHost, smtpPort, smtpSecure, smtpUser, smtpPassword, saveToSent, sentFolder, defaultBcc }) => {
+  }, async ({ accountId, name, host, port, user, password, tls, allowStartTLS, tlsRejectUnauthorized, email, smtpHost, smtpPort, smtpSecure, smtpUser, smtpPassword, saveToSent, sentFolder, defaultBcc }) => {
     const existing = accountManager.getAccount(accountId);
     if (!existing) {
       throw new Error(`Account ${accountId} not found`);
@@ -101,6 +104,7 @@ export function accountTools(
     if (password !== undefined) updates.password = password;
     if (tls !== undefined) updates.tls = tls;
     if (allowStartTLS !== undefined) updates.allowStartTLS = allowStartTLS;
+    if (tlsRejectUnauthorized !== undefined) updates.tlsRejectUnauthorized = tlsRejectUnauthorized;
     if (email !== undefined) updates.email = email;
     if (saveToSent !== undefined) updates.saveToSent = saveToSent;
     // Empty string clears the override (falls back to auto-detection).
@@ -165,6 +169,7 @@ export function accountTools(
             user: acc.user,
             tls: acc.tls,
             ...(acc.allowStartTLS === false ? { allowStartTLS: false } : {}),
+            ...(acc.tlsRejectUnauthorized === false ? { tlsRejectUnauthorized: false } : {}),
           })),
         }, null, 2)
       }]

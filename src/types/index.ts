@@ -30,6 +30,10 @@ export interface ImapAccount {
    * and draft. Merged with any per-call `bcc` (call-site values win for
    * ordering; duplicates are removed case-insensitively). */
   defaultBcc?: string | string[];
+  /** Whether to reject TLS certificates that are not authorized (self-signed, expired, etc.).
+   * Set to false to allow connections to servers with invalid certificates.
+   * Default: true (validate certificates). */
+  tlsRejectUnauthorized?: boolean;
 }
 
 export interface SmtpConfig {

@@ -188,7 +188,12 @@ export class ImapService {
       // an IP host it also omits the SNI servername, so Node would otherwise
       // check the cert against a default of "localhost" and reject a cert
       // bound to e.g. 127.0.0.1 (local bridges like ProtonMail Bridge).
-      tls: { host: account.host },
+      tls: {
+        host: account.host,
+        // Certificate validation stays on unless the account explicitly opts
+        // out (tlsRejectUnauthorized: false) for self-signed/internal servers.
+        rejectUnauthorized: account.tlsRejectUnauthorized !== false,
+      },
       // imapflow opportunistically upgrades a non-`secure` connection via
       // STARTTLS whenever the server advertises it, independent of `secure`.
       // That's the desired behavior for the common STARTTLS-on-plain-port-143
@@ -1818,7 +1823,12 @@ export class ImapService {
       port: account.port,
       secure: account.tls,
       // Validate the certificate against the host we actually dial; see connect().
-      tls: { host: account.host },
+      tls: {
+        host: account.host,
+        // Certificate validation stays on unless the account explicitly opts
+        // out (tlsRejectUnauthorized: false) for self-signed/internal servers.
+        rejectUnauthorized: account.tlsRejectUnauthorized !== false,
+      },
       // See connect() — allowStartTLS: false opts out of the opportunistic upgrade.
       ...(account.allowStartTLS === false ? { doSTARTTLS: false } : {}),
       auth: {
