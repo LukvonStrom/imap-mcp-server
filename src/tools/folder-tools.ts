@@ -127,6 +127,89 @@ export function folderTools(
     }
   });
 
+  // Rename folder tool
+  server.registerTool('imap_rename_folder', {
+    description:
+      'Rename or move a folder. Messages, flags and subfolders travel with it, and the server moves the mailbox rather than copying, so this is cheap no matter how much the folder holds. ' +
+      'Also moves a folder within the hierarchy when the new path has a different parent (e.g. "Projekt" to "Archiv/Projekt"). ' +
+      'Fails if the target name already exists, and refuses INBOX — renaming INBOX on IMAP means moving every message into a new mailbox, which is not what the name suggests.',
+    inputSchema: {
+      ...accountSelector,
+      folder: z.string().describe('Current full folder path (e.g. "Unsortiert2").'),
+      newFolder: z.string().describe('New full folder path (e.g. "Unsortiert" or "Archiv/Unsortiert"). Must not exist yet.'),
+    }
+  }, async ({ accountId: rawAccountId, accountName, folder, newFolder }) => {
+    try {
+      const accountId = accountManager.resolveAccountId(rawAccountId, accountName);
+      const result = await imapService.renameFolder(accountId, folder, newFolder);
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: true,
+            folder: result.path,
+            newFolder: result.newPath,
+            message: `Folder "${result.path}" renamed to "${result.newPath}"`,
+          }, null, 2)
+        }]
+      };
+    } catch (err) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            folder,
+            newFolder,
+            error: err instanceof Error ? err.message : 'Unknown error',
+          }, null, 2)
+        }]
+      };
+    }
+  });
+
+  // Delete folder tool
+  server.registerTool('imap_delete_folder', {
+    description:
+      'Delete a folder. Destructive and not undoable: deleting a mailbox deletes the messages in it. ' +
+      'Guarded by default — a folder that still holds messages, or that carries a special-use role (Sent, Drafts, Trash, Junk, Archive), is refused and the response says why. Set force to override that; INBOX is refused regardless. ' +
+      'To keep the messages, move them elsewhere first (imap_move_email) or rename the folder instead (imap_rename_folder).',
+    inputSchema: {
+      ...accountSelector,
+      folder: z.string().describe('Full path of the folder to delete.'),
+      force: z.boolean().default(false).describe('Delete even when the folder still holds messages or is a special-use folder. The messages are deleted with it. Leave false unless the caller explicitly asked to discard the contents.'),
+    }
+  }, async ({ accountId: rawAccountId, accountName, folder, force }) => {
+    try {
+      const accountId = accountManager.resolveAccountId(rawAccountId, accountName);
+      const result = await imapService.deleteFolder(accountId, folder, { force });
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: true,
+            folder: result.path,
+            messagesDeleted: result.messagesDeleted,
+            message: result.messagesDeleted > 0
+              ? `Folder "${result.path}" deleted along with ${result.messagesDeleted} message(s)`
+              : `Empty folder "${result.path}" deleted`,
+          }, null, 2)
+        }]
+      };
+    } catch (err) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            folder,
+            error: err instanceof Error ? err.message : 'Unknown error',
+          }, null, 2)
+        }]
+      };
+    }
+  });
+
   // Get unread count tool
   server.registerTool('imap_get_unread_count', {
     description: 'Count unread (unseen) emails per folder, plus a total. Use for "how many unread do I have?" overviews. Defaults to all folders; pass a folders list to limit scope and speed it up.',

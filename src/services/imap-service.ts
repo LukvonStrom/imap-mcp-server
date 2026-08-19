@@ -1323,6 +1323,107 @@ export class ImapService {
   }
 
   /**
+   * Rename a folder. Messages, flags and subfolders travel with it — the server
+   * moves the mailbox rather than copying, so this is cheap regardless of how
+   * much the folder holds.
+   *
+   * INBOX is refused: RFC 3501 defines renaming it as creating a new mailbox
+   * and *moving every message out*, which is nothing like what "rename" reads
+   * as at a call site.
+   */
+  async renameFolder(
+    accountId: string,
+    folderPath: string,
+    newPath: string,
+  ): Promise<{ path: string; newPath: string }> {
+    if (folderPath.toUpperCase() === 'INBOX') {
+      throw new Error(
+        'Refusing to rename INBOX: on IMAP that moves every message into a new mailbox rather than renaming anything.'
+      );
+    }
+    if (folderPath === newPath) {
+      throw new Error(`Source and destination are the same folder ("${folderPath}").`);
+    }
+
+    const client = await this.ensureConnected(accountId);
+
+    if (!(await this.folderExists(accountId, folderPath))) {
+      throw new Error(`Folder "${folderPath}" does not exist.`);
+    }
+    if (await this.folderExists(accountId, newPath)) {
+      throw new Error(`Cannot rename to "${newPath}": a folder with that name already exists.`);
+    }
+
+    try {
+      const result = await client.mailboxRename(folderPath, newPath);
+      return {
+        path: (result && typeof result === 'object' && 'path' in result) ? (result as any).path : folderPath,
+        newPath: (result && typeof result === 'object' && 'newPath' in result) ? (result as any).newPath : newPath,
+      };
+    } catch (err) {
+      throw new Error(
+        `Failed to rename "${folderPath}" to "${newPath}": ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  /**
+   * Delete a folder.
+   *
+   * Guarded, because deleting a mailbox takes its messages with it and no
+   * undo exists: a folder that still holds mail, or that carries an RFC 6154
+   * special-use role (Sent, Drafts, Trash, Junk, Archive), is refused unless
+   * the caller passes `force`. INBOX is refused outright.
+   */
+  async deleteFolder(
+    accountId: string,
+    folderPath: string,
+    options?: { force?: boolean },
+  ): Promise<{ path: string; messagesDeleted: number }> {
+    if (folderPath.toUpperCase() === 'INBOX') {
+      throw new Error('Refusing to delete INBOX.');
+    }
+
+    const client = await this.ensureConnected(accountId);
+
+    const list = await client.list();
+    const entry = list.find(f => f.path === folderPath);
+    if (!entry) {
+      throw new Error(`Folder "${folderPath}" does not exist.`);
+    }
+
+    if (!options?.force && entry.specialUse) {
+      throw new Error(
+        `Refusing to delete "${folderPath}": it is the ${entry.specialUse} folder. Pass force to override.`
+      );
+    }
+
+    let messageCount = 0;
+    try {
+      const status = await client.status(folderPath, { messages: true });
+      messageCount = Number(status.messages ?? 0);
+    } catch {
+      // A mailbox that cannot be STATUSed (\Noselect container) holds no mail
+      // of its own; leave the count at zero.
+    }
+
+    if (messageCount > 0 && !options?.force) {
+      throw new Error(
+        `Refusing to delete "${folderPath}": it still holds ${messageCount} message(s). Move them first, or pass force to delete them with the folder.`
+      );
+    }
+
+    try {
+      await client.mailboxDelete(folderPath);
+      return { path: folderPath, messagesDeleted: messageCount };
+    } catch (err) {
+      throw new Error(
+        `Failed to delete "${folderPath}": ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  /**
    * Find messages in `searchFolder` that belong to the same conversation
    * threads as messages already in `sourceFolder`.
    *
