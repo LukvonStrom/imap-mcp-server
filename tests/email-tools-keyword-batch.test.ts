@@ -67,3 +67,53 @@ describe('imap_add_keyword / imap_remove_keyword with UID lists', () => {
     expect(schema.safeParse(7).data).toBe(7);
   });
 });
+
+describe('imap_remove_keyword with allInFolder', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    handlers.clear();
+    emailTools(mockServer as any, mockImapService as any, mockAccountManager as any, {} as any);
+  });
+
+  it('clears the keyword from the whole folder in one call', async () => {
+    (mockImapService as any).removeKeywordFromFolder = vi.fn().mockResolvedValueOnce(1072);
+
+    const parsed = parse(await handlers.get('imap_remove_keyword')!({
+      accountId: 'acc1', folder: 'Unsortiert', allInFolder: true, keyword: '$imapmcpChecked',
+    }));
+
+    expect((mockImapService as any).removeKeywordFromFolder)
+      .toHaveBeenCalledWith('acc1', 'Unsortiert', '$imapmcpChecked');
+    expect(parsed).toMatchObject({ success: true, count: 1072, allInFolder: true });
+  });
+
+  it('says so when nothing carried the keyword', async () => {
+    (mockImapService as any).removeKeywordFromFolder = vi.fn().mockResolvedValueOnce(0);
+
+    const parsed = parse(await handlers.get('imap_remove_keyword')!({
+      accountId: 'acc1', folder: 'Unsortiert', allInFolder: true, keyword: '$imapmcpChecked',
+    }));
+
+    expect(parsed.message).toContain('No message in Unsortiert carried');
+  });
+
+  it('refuses uid and allInFolder together', async () => {
+    const parsed = parse(await handlers.get('imap_remove_keyword')!({
+      accountId: 'acc1', folder: 'Unsortiert', uid: [1, 2], allInFolder: true, keyword: '$x',
+    }));
+
+    expect(parsed.success).toBe(false);
+    expect(parsed.error).toContain('not both');
+  });
+
+  it('refuses neither, rather than guessing', async () => {
+    // A forgotten uid must not sweep the folder.
+    const parsed = parse(await handlers.get('imap_remove_keyword')!({
+      accountId: 'acc1', folder: 'Unsortiert', allInFolder: false, keyword: '$x',
+    }));
+
+    expect(parsed.success).toBe(false);
+    expect(parsed.error).toContain('Specify uid');
+    expect(mockImapService.removeKeywordFromUids).not.toHaveBeenCalled();
+  });
+});

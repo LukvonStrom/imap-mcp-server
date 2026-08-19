@@ -763,16 +763,58 @@ export function emailTools(
 
   // Remove keyword tool
   server.registerTool('imap_remove_keyword', {
-    description: 'Remove an arbitrary custom (non-system) IMAP keyword/label from an email — e.g. a provider color label like Open-Xchange\'s $cl_1..$cl_10, Apple Mail\'s $MailFlagBit0..$MailFlagBit2, or an app tag such as $promotion. Unlike imap_unflag_email (which only ever clears the system \\Flagged flag), this passes the keyword through verbatim, but rejects backslash-prefixed system flags (e.g. \\Flagged, \\Seen, \\Deleted) — use the dedicated flag/read tools for those. Not every IMAP server permits custom keywords (see the mailbox\'s PERMANENTFLAGS) — if the server rejects or silently ignores the change, this call fails rather than reporting success.',
+    description: 'Remove an arbitrary custom (non-system) IMAP keyword/label from one message, a list of messages, or every message in a folder (allInFolder) — e.g. a provider color label like Open-Xchange\'s $cl_1..$cl_10, Apple Mail\'s $MailFlagBit0..$MailFlagBit2, or an app tag such as $promotion. Unlike imap_unflag_email (which only ever clears the system \\Flagged flag), this passes the keyword through verbatim, but rejects backslash-prefixed system flags (e.g. \\Flagged, \\Seen, \\Deleted) — use the dedicated flag/read tools for those. Not every IMAP server permits custom keywords (see the mailbox\'s PERMANENTFLAGS) — if the server rejects or silently ignores the change, this call fails rather than reporting success.',
     inputSchema: {
       ...accountSelector,
       folder: z.string().default('INBOX').describe('Folder name'),
-      uid: uidList('Single email UID or array of UIDs. Pass an array to clear a keyword from many messages in one command — resetting a progress marker over a whole folder is thousands of messages, which one call each cannot serve.').nonoptional(),
+      uid: uidList('Single email UID or array of UIDs. Pass an array to clear a keyword from many messages in one command. Omit it and set allInFolder instead to clear the keyword from the whole folder.').optional(),
+      allInFolder: z.boolean().default(false).describe('Clear the keyword from EVERY message in the folder that carries it, without naming UIDs. This is the reset for a progress marker such as the cursorKeyword of imap_sort_inbox, which belongs to the folder rather than to any uid a caller could name. Requires uid to be omitted — an explicit opt-in, so a forgotten uid can never sweep a folder by accident.'),
       keyword: z.string().describe('IMAP keyword to remove, passed through verbatim (e.g. "$cl_3", "$MailFlagBit0", "$Junk")'),
     }
-  }, async ({ accountId: rawAccountId, accountName, folder, uid, keyword }) => {
+  }, async ({ accountId: rawAccountId, accountName, folder, uid, allInFolder, keyword }) => {
     const accountId = accountManager.resolveAccountId(rawAccountId, accountName);
-    const uids = Array.isArray(uid) ? uid : [uid];
+
+    if (allInFolder && uid !== undefined) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            error: 'Pass either uid or allInFolder, not both: naming UIDs and sweeping the folder are different operations.',
+          }, null, 2)
+        }]
+      };
+    }
+    if (!allInFolder && uid === undefined) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: false,
+            error: 'Specify uid (one or many), or set allInFolder to clear the keyword from every message in the folder.',
+          }, null, 2)
+        }]
+      };
+    }
+
+    if (allInFolder) {
+      const count = await imapService.removeKeywordFromFolder(accountId, folder, keyword);
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            success: true,
+            count,
+            allInFolder: true,
+            message: count === 0
+              ? `No message in ${folder} carried keyword "${keyword}"`
+              : `Keyword "${keyword}" removed from all ${count} messages carrying it in ${folder}`,
+          }, null, 2)
+        }]
+      };
+    }
+
+    const uids = Array.isArray(uid) ? uid : [uid as number];
     const count = await imapService.removeKeywordFromUids(accountId, folder, uids, keyword);
 
     return {

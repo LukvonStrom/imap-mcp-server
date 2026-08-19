@@ -1085,6 +1085,48 @@ export class ImapService {
     }
   }
 
+  /**
+   * Remove one keyword from every message in a folder that carries it, in a
+   * single command.
+   *
+   * The reset path for a progress marker: after a rule change the marker has to
+   * go so the folder is examined again, and that is a property of the folder
+   * rather than of any uid the caller could be expected to name.
+   */
+  async removeKeywordFromFolder(
+    accountId: string,
+    folderName: string,
+    keyword: string,
+  ): Promise<number> {
+    if (isSystemFlag(keyword)) {
+      throw new Error(
+        `"${keyword}" is a system flag, not a custom keyword. Use the dedicated tool instead ` +
+        `(e.g. imap_unflag_email for \Flagged, imap_mark_as_unread for \Seen).`
+      );
+    }
+
+    const client = await this.ensureConnected(accountId);
+
+    let lock;
+    try {
+      lock = await client.getMailboxLock(folderName);
+      const uids = await client.search({ keyword }, { uid: true });
+      if (!uids || uids.length === 0) return 0;
+
+      const applied = await client.messageFlagsRemove(uids, [keyword], { uid: true });
+      if (!applied) {
+        throw new Error(
+          `Server did not remove keyword "${keyword}" from ${uids.length} message(s) in ${folderName}.`
+        );
+      }
+      return uids.length;
+    } finally {
+      if (lock) {
+        lock.release();
+      }
+    }
+  }
+
   async removeKeyword(accountId: string, folderName: string, uid: number, keyword: string): Promise<void> {
     if (isSystemFlag(keyword)) {
       throw new Error(
