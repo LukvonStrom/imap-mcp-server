@@ -739,19 +739,23 @@ export function emailTools(
     inputSchema: {
       ...accountSelector,
       folder: z.string().default('INBOX').describe('Folder name'),
-      uid: z.coerce.number().describe('Email UID'),
+      uid: uidList('Single email UID or array of UIDs. Pass an array to tag many messages in one command — a progress marker over a whole folder is thousands of messages, which one call each cannot serve.').nonoptional(),
       keyword: z.string().describe('IMAP keyword to set, passed through verbatim (e.g. "$cl_3", "$MailFlagBit0", "$Junk")'),
     }
   }, async ({ accountId: rawAccountId, accountName, folder, uid, keyword }) => {
     const accountId = accountManager.resolveAccountId(rawAccountId, accountName);
-    await imapService.addKeyword(accountId, folder, uid, keyword);
+    const uids = Array.isArray(uid) ? uid : [uid];
+    const count = await imapService.addKeywordToUids(accountId, folder, uids, keyword);
 
     return {
       content: [{
         type: 'text',
         text: JSON.stringify({
           success: true,
-          message: `Keyword "${keyword}" added to email ${uid}`,
+          count,
+          message: uids.length === 1
+            ? `Keyword "${keyword}" added to email ${uids[0]}`
+            : `Keyword "${keyword}" added to ${count} emails`,
         }, null, 2)
       }]
     };
@@ -763,19 +767,23 @@ export function emailTools(
     inputSchema: {
       ...accountSelector,
       folder: z.string().default('INBOX').describe('Folder name'),
-      uid: z.coerce.number().describe('Email UID'),
+      uid: uidList('Single email UID or array of UIDs. Pass an array to clear a keyword from many messages in one command — resetting a progress marker over a whole folder is thousands of messages, which one call each cannot serve.').nonoptional(),
       keyword: z.string().describe('IMAP keyword to remove, passed through verbatim (e.g. "$cl_3", "$MailFlagBit0", "$Junk")'),
     }
   }, async ({ accountId: rawAccountId, accountName, folder, uid, keyword }) => {
     const accountId = accountManager.resolveAccountId(rawAccountId, accountName);
-    await imapService.removeKeyword(accountId, folder, uid, keyword);
+    const uids = Array.isArray(uid) ? uid : [uid];
+    const count = await imapService.removeKeywordFromUids(accountId, folder, uids, keyword);
 
     return {
       content: [{
         type: 'text',
         text: JSON.stringify({
           success: true,
-          message: `Keyword "${keyword}" removed from email ${uid}`,
+          count,
+          message: uids.length === 1
+            ? `Keyword "${keyword}" removed from email ${uids[0]}`
+            : `Keyword "${keyword}" removed from ${count} emails`,
         }, null, 2)
       }]
     };
