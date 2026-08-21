@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `imap_save_draft` and Sent-folder copies now keep `Bcc` headers in the stored MIME. Nodemailer's `MailComposer` omits Bcc from the built message by default (SMTP envelope only), so even when `defaultBcc` / a call-site `bcc` was merged into the composer, the appended draft or Sent copy had no `Bcc:` line and mail clients showed an empty BCC field. `SmtpService.composeRaw` now sets `keepBcc` on the compiled message. SMTP delivery was already correct; only the IMAP-stored copy was missing the header. Tests in `tests/smtp-service-compose-raw-bcc.test.ts`.
+
 ### Security
 - Two dependency advisories cleared — `npm audit` reports 0 vulnerabilities again, with no source changes. `html-to-text` → `^10.0.1` pulls in `deepmerge-ts` 8.0.1 (GHSA-ggr8-5vv4-36mx, stack exhaustion when merging recursive object graphs); this is the one that matters, because it sits on a **runtime** path via `mailparser` → `html-to-text`. `mailparser` pins `html-to-text` to exactly `10.0.0`, so the fix cannot arrive on its own — the override deliberately supersedes that pin. Upstream 10.0.1 is a patch whose only change is that same `deepmerge-ts` bump. `nanoid` → `^3.3.18` (GHSA-2v37-7h3g-55p8, custom generators can loop indefinitely when size is zero) is dev-scope only, reached through `vitest` → `vite` → `postcss`.
 
