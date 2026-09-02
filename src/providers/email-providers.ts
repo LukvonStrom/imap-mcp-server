@@ -14,6 +14,12 @@ export interface EmailProvider {
   helpUrl?: string;
   requiresAppPassword?: boolean;
   oauth2Supported?: boolean;
+  /** How the provider authenticates IMAP/SMTP. `oauth2` means passwords (and
+   * app passwords) are refused and the account must be added through the
+   * OAuth device-code flow (`imap_add_oauth_account`). Absent = `password`. */
+  authType?: 'password' | 'oauth2';
+  /** Default Entra tenant for `authType: 'oauth2'` providers. */
+  oauthTenant?: string;
   notes?: string;
 }
 
@@ -50,7 +56,10 @@ export const emailProviders: EmailProvider[] = [
     smtpSecurity: 'STARTTLS',
     domains: ['outlook.com', 'hotmail.com', 'live.com', 'msn.com'],
     helpUrl: 'https://support.microsoft.com/en-us/office/pop-imap-and-smtp-settings-8361e398-8af4-4e97-b147-6c6c4ac95353',
-    oauth2Supported: true
+    oauth2Supported: true,
+    authType: 'oauth2',
+    oauthTenant: 'consumers',
+    notes: 'Microsoft no longer accepts passwords or app passwords for IMAP/SMTP. Add this account with the OAuth 2.0 device-code flow (imap_add_oauth_account → imap_complete_oauth_login); it needs the Application (client) ID of an Entra app registration. See the README section "Outlook.com / Microsoft 365 (OAuth 2.0)".'
   },
   {
     id: 'yahoo',
@@ -192,8 +201,10 @@ export const emailProviders: EmailProvider[] = [
     smtpSecurity: 'STARTTLS',
     domains: [],
     helpUrl: 'https://support.microsoft.com/en-us/office/pop-imap-and-smtp-settings-8361e398-8af4-4e97-b147-6c6c4ac95353',
-    notes: 'For business/organization accounts. Use full email as username.',
-    oauth2Supported: true
+    notes: 'For business/organization accounts; use the full email address as the mailbox address. Microsoft no longer accepts passwords or app passwords for IMAP/SMTP — add this account with the OAuth 2.0 device-code flow (imap_add_oauth_account → imap_complete_oauth_login) using the Application (client) ID of an Entra app registration in your tenant. See the README section "Outlook.com / Microsoft 365 (OAuth 2.0)".',
+    oauth2Supported: true,
+    authType: 'oauth2',
+    oauthTenant: 'organizations'
   },
   {
     id: 'zoho',

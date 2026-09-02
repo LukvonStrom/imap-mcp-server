@@ -86,10 +86,30 @@ function renderProviders() {
     `).join('');
 }
 
+// Providers flagged authType "oauth2" (Outlook.com, Microsoft 365) refuse
+// passwords; the wizard only does password logins, so it shows a notice and
+// refuses to submit. Detects by the selected provider, or by the email domain
+// when no specific provider was picked.
+function oauthOnlyProviderFor(email) {
+    if (selectedProvider && selectedProvider.id !== 'custom') {
+        return selectedProvider.authType === 'oauth2' ? selectedProvider : null;
+    }
+    const domain = (email || '').split('@')[1]?.toLowerCase();
+    const detected = domain ? providers.find(p => p.domains.some(d => domain.endsWith(d))) : undefined;
+    return detected && detected.authType === 'oauth2' ? detected : null;
+}
+
+function updateOAuthNotice(provider) {
+    const notice = document.getElementById('oauthNotice');
+    if (!notice) return;
+    notice.classList.toggle('hidden', !provider);
+}
+
 // Select provider
 function selectProvider(providerId) {
     selectedProvider = providers.find(p => p.id === providerId);
     goToStep(2);
+    updateOAuthNotice(selectedProvider && selectedProvider.authType === 'oauth2' ? selectedProvider : null);
     
     // Pre-fill advanced settings
     if (selectedProvider) {
@@ -104,7 +124,9 @@ function selectProvider(providerId) {
         
         // Update password help text
         const passwordHelp = document.getElementById('passwordHelp');
-        if (selectedProvider.requiresAppPassword) {
+        if (selectedProvider.authType === 'oauth2') {
+            passwordHelp.innerHTML = `<span class="mr-1">⚠️</span>${selectedProvider.notes || 'This provider does not accept passwords for IMAP/SMTP; use the OAuth 2.0 tool flow.'}`;
+        } else if (selectedProvider.requiresAppPassword) {
             passwordHelp.innerHTML = `<span class="mr-1">ℹ️</span>${selectedProvider.notes || 'This provider requires an app-specific password.'}`;
             if (selectedProvider.helpUrl) {
                 passwordHelp.innerHTML += ` <a href="${selectedProvider.helpUrl}" target="_blank" class="text-blue-600 hover:underline">Learn more</a>`;
@@ -190,9 +212,23 @@ async function handleAccountUpdate(e) {
     await updateAndTestAccount(window.editingAccountId, accountData);
 }
 
+function showInlineError(message) {
+    document.getElementById('inlineTestResult').classList.remove('hidden');
+    document.getElementById('inlineTestSuccess').classList.add('hidden');
+    document.getElementById('inlineTestError').classList.remove('hidden');
+    document.getElementById('inlineErrorMessage').textContent = message;
+}
+
 // Handle account form submission
 async function handleAccountSubmit(e) {
     e.preventDefault();
+
+    const oauthOnly = oauthOnlyProviderFor(document.getElementById('email').value);
+    if (oauthOnly) {
+        updateOAuthNotice(oauthOnly);
+        showInlineError(`${oauthOnly.displayName} does not accept passwords for IMAP/SMTP. Add this account with the OAuth 2.0 tools (imap_add_oauth_account) from your MCP client instead.`);
+        return;
+    }
 
     const password = document.getElementById('password').value;
     if (!password) {
@@ -391,6 +427,7 @@ async function viewAccounts() {
                                 <td class="py-3">${account.host}</td>
                                 <td class="py-3">
                                     <span class="px-2 py-1 text-xs rounded-full bg-green-100 text-green-800">Active</span>
+                                    ${account.authType === 'oauth2' ? '<span class="ml-1 px-2 py-1 text-xs rounded-full bg-blue-100 text-blue-800">OAuth 2.0</span>' : ''}
                                 </td>
                                 <td class="py-3 text-right">
                                     <button onclick="editAccount('${account.id}')" class="text-blue-600 hover:text-blue-800 mr-2">
@@ -473,6 +510,13 @@ async function editAccount(accountId) {
             ? providers.find(p => p.domains.some(d => domain.endsWith(d)))
             : undefined;
         selectedProvider = detectedProvider || providers.find(p => p.id === 'custom');
+
+        // An OAuth account has no password to edit here; point at the tool flow
+        // for re-authorization while still allowing the other fields to be changed.
+        updateOAuthNotice(account.authType === 'oauth2' ? (detectedProvider || selectedProvider) : null);
+        if (account.authType === 'oauth2') {
+            document.getElementById('password').placeholder = 'OAuth 2.0 account — no password (re-authorize via imap_add_oauth_account)';
+        }
         
         // Show credentials form
         goToStep(2);
@@ -631,6 +675,7 @@ function toggleSmtpAuth() {
 function showProviderSelection() {
     // Reset form and edit mode
     document.getElementById('accountForm').reset();
+    updateOAuthNotice(null);
     document.getElementById('password').placeholder = '';
     window.editingAccountId = null;
     document.getElementById('accountForm').onsubmit = handleAccountSubmit;
@@ -666,6 +711,7 @@ function showProviderSelection() {
 function addAnotherAccount() {
     // Reset form
     document.getElementById('accountForm').reset();
+    updateOAuthNotice(null);
     selectedProvider = null;
     goToStep(1);
 }
