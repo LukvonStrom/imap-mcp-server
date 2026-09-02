@@ -161,6 +161,13 @@ store the credentials on the account via imap_update_account.
 Because the variables are read once at startup, setting one in an already-running
 shell has no effect until the server is restarted.
 
+### Choosing where accounts are stored
+
+By default accounts and the encryption key live in `~/.imap-mcp/`. Set
+`IMAP_MCP_CONFIG_DIR` to an absolute directory to use a different store, e.g.
+to keep several isolated account sets side by side or to place the store on an
+encrypted volume. The directory is created owner-only (`0700`) if missing.
+
 ### Supported Email Providers
 
 The setup wizard includes pre-configured settings for:
@@ -303,7 +310,7 @@ to a mailbox, or expose only a hand-picked subset of tools.
 The read-only subset is: `imap_list_accounts`, `imap_connect`, `imap_disconnect`,
 `imap_test_account`, `imap_search_emails`, `imap_get_email`,
 `imap_get_latest_emails`, `imap_download_attachment`, `imap_find_thread_messages`,
-`imap_find_email_by_message_id`, `imap_list_folders`, `imap_folder_status`,
+`imap_find_email_by_message_id`, `imap_export_messages`, `imap_list_folders`, `imap_folder_status`,
 `imap_get_unread_count`, `imap_check_spam`, `imap_domain_stats`,
 `imap_list_spam_domains`.
 
@@ -335,6 +342,10 @@ Once configured, the IMAP MCP server provides the following tools in Claude:
       covered only by a shared/wildcard cert. Defaults to true.
       **Warning:** with `tls: false` this yields a fully cleartext session
       (password included) — use only on a trusted/local network.
+  - tlsRejectUnauthorized: Set to false to accept self-signed/expired/mismatched
+      certificates. Defaults to true. **Warning:** disabling validation lets a
+      man-in-the-middle read the password and all mail — only for a trusted
+      internal server, never for a public provider.
   - sentFolder: Explicit Sent-folder name for sent-mail copies, e.g. "Gesendet"
       (optional — only needed when the server has no \Sent SPECIAL-USE folder
       and auto-detection fails)
@@ -347,7 +358,7 @@ Once configured, the IMAP MCP server provides the following tools in Claude:
   ```
   Parameters:
   - accountId: ID of the account to update
-  - name, host, port, user, password, tls, allowStartTLS, email: IMAP fields (all optional)
+  - name, host, port, user, password, tls, allowStartTLS, tlsRejectUnauthorized, email: IMAP fields (all optional)
   - smtpHost, smtpPort, smtpSecure, smtpUser, smtpPassword: SMTP fields (optional)
   - saveToSent: Save sent emails to the Sent folder (optional)
   - sentFolder: Explicit Sent-folder override (optional). Pass an empty string
@@ -469,7 +480,11 @@ Once configured, the IMAP MCP server provides the following tools in Claude:
   Parameters:
   - accountId: Account ID
   - folder: Folder name
-  - uid: Email UID
+  - uid: Email UID, or an array of UIDs to change many messages in one command
+  - allInFolder (imap_remove_keyword only): true to clear the keyword from every
+      message in the folder that carries it, without naming UIDs. Mutually
+      exclusive with uid; one of the two is required so a forgotten uid can
+      never sweep a folder by accident
   - keyword: IMAP keyword to set/remove (e.g. "$cl_3")
   ```
 
@@ -616,6 +631,29 @@ Once configured, the IMAP MCP server provides the following tools in Claude:
   - includeAttachments: Include original attachments (default: true)
   ```
 
+### Mailbox Export and Rule Analysis
+
+- **imap_export_messages**: Export per-message metadata for a whole mailbox (folder, uid, date, sender address/name/domain, recipients, subject, read/flagged/answered, size, attachment flag, List-Id/List-Unsubscribe, Message-ID — never bodies) to a JSONL or CSV file under `<download dir>/exports/`, and return aggregate statistics plus **rule candidates**. Use it to decide which server-side rules to create in Outlook.com (Settings → Mail → Rules) or Gmail without pulling every message through the conversation. Read-only for the mailbox.
+  ```
+  Parameters:
+  - accountId: Account ID (or accountName)
+  - folders: Explicit folder list (optional; default: every selectable folder)
+  - includeJunk: Include Junk/Spam when scanning all folders (default: true)
+  - includeTrash: Include Trash/Deleted Items (default: false)
+  - since, before: Date window, YYYY-MM-DD (optional; 90–180 days is a good sample)
+  - limitPerFolder: Newest N per folder (default: 5000)
+  - format: "jsonl" (default) or "csv"
+  - filename: File name only — always written under the exports directory
+  - summaryTop: Top-N senders/domains/lists in the summary (default: 30)
+  - minMessagesForRule: Minimum messages for a rule candidate (default: 5)
+
+  Returns:
+  - path, rowCount, unreadCount, dateRange, per-folder counts
+  - summary: topSenders / topDomains / topLists with unread % and folder spread
+  - ruleCandidates: sender domains, addresses and List-Ids with the evidence
+      (messages, unread %, dominant folder) and a suggested rule
+  ```
+
 ### Folder Operations
 
 - **imap_list_folders**: List all folders
@@ -647,6 +685,22 @@ Once configured, the IMAP MCP server provides the following tools in Claude:
   Parameters:
   - accountId: Account ID
   - folder: Full folder path to create (e.g. "Archives/2026/2026-05" or "INBOX.Archive")
+  ```
+
+- **imap_rename_folder**: Rename or move a folder (messages, flags and subfolders travel with it; the server moves the mailbox rather than copying). Fails if the target exists and refuses INBOX.
+  ```
+  Parameters:
+  - accountId: Account ID
+  - folder: Current full folder path (e.g. "Unsorted")
+  - newFolder: New full folder path (e.g. "Archive/Unsorted"); must not exist yet
+  ```
+
+- **imap_delete_folder**: Delete a folder. **Destructive** — the messages in it are deleted too. Guarded by default: a folder that still holds messages or has a special-use role (Sent, Drafts, Trash, Junk, Archive) is refused and the response says why; INBOX is always refused.
+  ```
+  Parameters:
+  - accountId: Account ID
+  - folder: Full path of the folder to delete
+  - force: Delete even when non-empty or special-use (default: false)
   ```
 
 - **imap_get_unread_count**: Count unread emails

@@ -7,6 +7,7 @@ import { accountTools } from './account-tools.js';
 import { emailTools } from './email-tools.js';
 import { folderTools } from './folder-tools.js';
 import { spamTools } from './spam-tools.js';
+import { exportTools } from './export-tools.js';
 
 /**
  * Read-only / safe-by-default subset of tools.
@@ -27,6 +28,7 @@ export const READ_ONLY_TOOLS: readonly string[] = [
   'imap_get_email',
   'imap_get_latest_emails',
   'imap_download_attachment',
+  'imap_export_messages',
   'imap_find_thread_messages',
   'imap_find_email_by_message_id',
   // Folder (read)
@@ -152,6 +154,9 @@ export function registerTools(
 
   // Register spam detection and management tools
   spamTools(target, imapService, spamService);
+
+  // Export (read-only; writes only to the local download directory)
+  exportTools(target, imapService, accountManager);
 
   if (enabled) {
     // Log to stderr only — stdout is the JSON-RPC channel.

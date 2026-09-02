@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — LukvonStrom fork
+
+### Added
+- `imap_export_messages`: export per-message metadata (never bodies) for a whole
+  mailbox to JSONL/CSV under `<download dir>/exports/`, with sender/domain/list
+  statistics and rule candidates for building Outlook.com / Gmail server-side rules.
+- `imap_rename_folder` / `imap_delete_folder` (guarded; refuses INBOX, non-empty
+  and special-use folders unless `force`). From FraNG5's fork.
+- `imap_add_keyword` / `imap_remove_keyword` accept UID lists; `imap_remove_keyword`
+  gains `allInFolder`. From FraNG5's fork.
+- `tlsRejectUnauthorized` per-account opt-out of certificate validation (off by
+  default, surfaced in `imap_list_accounts`). From FraNG5's fork.
+- `IMAP_MCP_CONFIG_DIR` relocates the credential store. From githappens' fork.
+- `allowStartTLS` opt-out for opportunistic STARTTLS (upstream PR #159).
+- Attachment validation, diagnostics and `dryRun` for `imap_send_email` (upstream PR #161).
+
+### Changed
+- Path-sourced attachments are confined to the download/upload directory or
+  `IMAP_ATTACHMENT_ROOTS`; URLs are rejected. Omitted `contentType` is detected
+  from the filename again instead of defaulting to `application/octet-stream`.
+- Cleartext/insecure options (`allowStartTLS: false`, `tlsRejectUnauthorized: false`)
+  carry explicit warnings in their tool descriptions.
+
 ## [Unreleased]
 
 ### Fixed

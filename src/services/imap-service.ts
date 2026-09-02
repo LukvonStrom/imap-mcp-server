@@ -1,6 +1,6 @@
 import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
-import { ImapAccount, EmailMessage, EmailContent, EmailBodyFormat, EmailLocation, Folder, SearchCriteria, SearchOptions, SentSaveResult, DEFAULT_BODY_MAX_LENGTH, DEFAULT_BODY_FORMAT, isSystemFlag } from '../types/index.js';
+import { ImapAccount, EmailMessage, EmailContent, EmailBodyFormat, EmailLocation, Folder, MessageExportRow, SearchCriteria, SearchOptions, SentSaveResult, DEFAULT_BODY_MAX_LENGTH, DEFAULT_BODY_FORMAT, isSystemFlag } from '../types/index.js';
 import type { AccountManager } from './account-manager.js';
 import { htmlToMarkdown, normalizeWhitespace } from './html-to-markdown.js';
 import { assertCredentialsResolved } from '../utils/env-credentials.js';
@@ -127,6 +127,13 @@ export interface MoveEmailBatchResult {
  * with newlines. Intentionally lightweight — no MIME word decoding — because
  * callers use it for plain string/regex matching (spam header analysis).
  */
+/** True when an imapflow bodyStructure tree holds any part flagged as an attachment. */
+export function hasAttachmentPart(node: any): boolean {
+  if (!node) return false;
+  if (node.disposition && String(node.disposition).toLowerCase() === 'attachment') return true;
+  return Array.isArray(node.childNodes) && node.childNodes.some((c: any) => hasAttachmentPart(c));
+}
+
 export function parseRawHeaders(raw: Buffer | string): Record<string, string> {
   const text = typeof raw === 'string' ? raw : raw.toString('utf8');
   const headers: Record<string, string> = {};
@@ -591,6 +598,89 @@ export class ImapService {
       }
 
       return messages.sort((a, b) => b.date.getTime() - a.date.getTime());
+    } finally {
+      if (lock) {
+        lock.release();
+      }
+    }
+  }
+
+
+  /**
+   * Stream one lightweight row per message in a folder — envelope, flags,
+   * size, list headers and an attachment indicator, never the body — to the
+   * `onRow` callback. Backs `imap_export_messages`, which writes the rows to a
+   * local file so a whole mailbox can be analysed (e.g. to derive server-side
+   * rules) without every message passing through the model context.
+   * Returns the number of rows emitted.
+   */
+  async exportFolderRows(
+    accountId: string,
+    folderName: string,
+    opts: { since?: Date; before?: Date; limit?: number },
+    onRow: (row: MessageExportRow) => void | Promise<void>,
+  ): Promise<number> {
+    const client = await this.ensureConnected(accountId);
+    let lock;
+    try {
+      lock = await client.getMailboxLock(folderName);
+
+      const criteria: SearchCriteria = {};
+      if (opts.since) criteria.since = opts.since;
+      if (opts.before) criteria.before = opts.before;
+      const hasCriteria = Object.keys(criteria).length > 0;
+      const found = await client.search(hasCriteria ? this.buildSearchQuery(criteria) : { all: true }, { uid: true });
+      let uids = Array.isArray(found) ? [...found].sort((a, b) => a - b) : [];
+      if (opts.limit && uids.length > opts.limit) {
+        uids = uids.slice(-opts.limit); // newest N by UID order
+      }
+      if (uids.length === 0) return 0;
+
+      const fetchQuery: any = {
+        uid: true,
+        envelope: true,
+        flags: true,
+        internalDate: true,
+        size: true,
+        bodyStructure: true,
+        headers: ['list-id', 'list-unsubscribe', 'precedence', 'auto-submitted'],
+      };
+
+      let count = 0;
+      for await (const msg of client.fetch(uids, fetchQuery, { uid: true })) {
+        const flags = new Set(Array.from(msg.flags || []) as string[]);
+        const env: any = msg.envelope || {};
+        const from = env.from?.[0] || {};
+        const replyTo = env.replyTo?.[0] || {};
+        const headers = msg.headers ? parseRawHeaders(msg.headers) : {};
+        const fromAddress = String(from.address || '').toLowerCase();
+        const row: MessageExportRow = {
+          folder: folderName,
+          uid: msg.uid,
+          date: new Date(msg.internalDate || env.date || Date.now()).toISOString(),
+          from: fromAddress,
+          fromName: String(from.name || ''),
+          fromDomain: fromAddress.includes('@') ? fromAddress.split('@').pop()! : '',
+          replyTo: String(replyTo.address || '').toLowerCase(),
+          to: (env.to || []).map((a: any) => String(a.address || '').toLowerCase()).filter(Boolean),
+          ccCount: (env.cc || []).length,
+          subject: String(env.subject || ''),
+          seen: flags.has('\\Seen'),
+          flagged: flags.has('\\Flagged'),
+          answered: flags.has('\\Answered'),
+          size: Number(msg.size || 0),
+          hasAttachments: hasAttachmentPart(msg.bodyStructure),
+          listId: String(headers['list-id'] || '').trim(),
+          hasListUnsubscribe: Boolean(headers['list-unsubscribe']),
+          precedence: String(headers['precedence'] || '').trim().toLowerCase(),
+          autoSubmitted: String(headers['auto-submitted'] || '').trim().toLowerCase(),
+          messageId: String(env.messageId || ''),
+          inReplyTo: String(env.inReplyTo || ''),
+        };
+        await onRow(row);
+        count++;
+      }
+      return count;
     } finally {
       if (lock) {
         lock.release();

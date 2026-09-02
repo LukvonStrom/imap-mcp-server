@@ -60,6 +60,36 @@ export interface EmailMessage {
   customKeywords: string[];
 }
 
+/**
+ * One lightweight row per message as produced by `imap_export_messages` —
+ * headers and flags only, never the body — for offline rule analysis
+ * (e.g. deriving Outlook.com inbox rules from sender/list statistics).
+ */
+export interface MessageExportRow {
+  folder: string;
+  uid: number;
+  /** ISO 8601 internal date. */
+  date: string;
+  from: string;
+  fromName: string;
+  fromDomain: string;
+  replyTo: string;
+  to: string[];
+  ccCount: number;
+  subject: string;
+  seen: boolean;
+  flagged: boolean;
+  answered: boolean;
+  size: number;
+  hasAttachments: boolean;
+  listId: string;
+  hasListUnsubscribe: boolean;
+  precedence: string;
+  autoSubmitted: string;
+  messageId: string;
+  inReplyTo: string;
+}
+
 export type EmailBodyFormat = 'markdown' | 'text' | 'html' | 'auto';
 
 export interface EmailContent extends EmailMessage {
