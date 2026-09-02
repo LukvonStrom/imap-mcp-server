@@ -333,6 +333,8 @@ Once configured, the IMAP MCP server provides the following tools in Claude:
       server advertises it (validating the cert against `host` regardless of
       `tls`). Needed for providers that advertise STARTTLS on a hostname
       covered only by a shared/wildcard cert. Defaults to true.
+      **Warning:** with `tls: false` this yields a fully cleartext session
+      (password included) — use only on a trusted/local network.
   - sentFolder: Explicit Sent-folder name for sent-mail copies, e.g. "Gesendet"
       (optional — only needed when the server has no \Sent SPECIAL-USE folder
       and auto-detection fails)
@@ -553,8 +555,12 @@ Once configured, the IMAP MCP server provides the following tools in Claude:
   - attachments: Array of attachments (optional)
     - filename: Attachment filename
     - content: Base64 encoded content; provide exactly one of `content` or `path`
-    - path: Readable local file path to attach; provide exactly one of `path` or `content`
-    - contentType: MIME type (defaults to `application/octet-stream`)
+    - path: Readable local file path to attach; provide exactly one of `path` or `content`.
+      URLs are rejected. The path must be under the attachment download/upload
+      directory (`imap_upload_file` paths always qualify) or a directory listed
+      in `IMAP_ATTACHMENT_ROOTS` (path-delimiter separated), otherwise the send
+      is refused.
+    - contentType: MIME type (optional; detected from the filename extension when omitted)
     - contentDisposition: "attachment" (default) or "inline" — use "inline" for images shown in the HTML body via cid:
     - cid: Content-ID for inline attachments; must match the `cid:` value used in an `<img src="cid:...">` tag in `html`
   - dryRun: Validate attachments and compose MIME without sending or saving to Sent (optional, default: false)

@@ -7,11 +7,11 @@ import { parseSerializedArray } from '../utils/array-input.js';
 import { mergeBcc } from '../utils/default-bcc.js';
 import type { EmailAttachment, EmailMessage, ImapAccount, SentSaveResult } from '../types/index.js';
 import { z } from 'zod';
-import { basename, join } from 'path';
+import { basename, join, delimiter as pathDelimiter, resolve as resolvePath, sep } from 'path';
 import { homedir } from 'os';
 import { randomBytes } from 'crypto';
 import { constants as fsConstants } from 'fs';
-import { access, stat } from 'fs/promises';
+import { access, realpath, stat } from 'fs/promises';
 
 // Reusable, backward-compatible account selector. accountId stays accepted as
 // before; accountName and the single-account default are additive conveniences.
@@ -70,7 +70,35 @@ type AttachmentDiagnostic = {
   cid?: string;
 };
 
-const DEFAULT_ATTACHMENT_CONTENT_TYPE = 'application/octet-stream';
+// Reported in diagnostics when the caller omitted contentType: nodemailer then
+// detects the MIME type from the filename extension at compose time.
+const AUTO_CONTENT_TYPE = 'auto';
+
+/**
+ * Directories an attachment `path` may point into. Attachments are the one
+ * place a tool call turns a local file into outbound data, so the path must be
+ * confined (AGENTS.md security rule 5): the download/upload dir by default,
+ * plus any extra roots listed in IMAP_ATTACHMENT_ROOTS (path-delimiter
+ * separated, e.g. "/Users/me/Documents:/srv/reports").
+ */
+function attachmentRoots(): string[] {
+  const extra = (process.env.IMAP_ATTACHMENT_ROOTS || '')
+    .split(pathDelimiter)
+    .map(r => r.trim())
+    .filter(Boolean);
+  return [DOWNLOAD_DIR, ...extra].map(r => resolvePath(r));
+}
+
+async function assertWithinAttachmentRoots(filePath: string, index: number): Promise<string> {
+  const real = await realpath(filePath);
+  const roots = attachmentRoots();
+  for (const root of roots) {
+    let rootReal = root;
+    try { rootReal = await realpath(root); } catch { /* root may not exist yet */ }
+    if (real === rootReal || real.startsWith(rootReal + sep)) return real;
+  }
+  throw new Error(`Invalid attachment at index ${index}: path is outside the allowed attachment directories (${roots.join(', ')}). Upload the file with imap_upload_file or add its directory to IMAP_ATTACHMENT_ROOTS.`);
+}
 
 function decodeStrictBase64(value: string, index: number): Buffer {
   const normalized = value.trim();
@@ -103,7 +131,10 @@ export async function normalizeAttachments(atts?: AttachmentInput[]): Promise<No
       throw new Error(`Invalid attachment at index ${index}: provide exactly one of content or path`);
     }
 
-    const contentType = att.contentType || DEFAULT_ATTACHMENT_CONTENT_TYPE;
+    // Leave contentType undefined when omitted so nodemailer detects it from the
+    // filename (report.pdf → application/pdf) instead of a generic octet-stream.
+    const contentType = att.contentType?.trim() || undefined;
+    const reportedContentType = contentType ?? AUTO_CONTENT_TYPE;
     const contentDisposition = att.contentDisposition ?? 'attachment';
     const cid = att.cid?.trim();
     if (contentDisposition === 'inline' && !cid) {
@@ -115,14 +146,14 @@ export async function normalizeAttachments(atts?: AttachmentInput[]): Promise<No
       attachments.push({
         filename,
         content,
-        contentType,
+        ...(contentType ? { contentType } : {}),
         contentDisposition,
         ...(cid ? { cid } : {}),
       });
       diagnostics.push({
         index,
         filename,
-        contentType,
+        contentType: reportedContentType,
         size: content.length,
         source: 'content',
         contentDisposition,
@@ -144,20 +175,21 @@ export async function normalizeAttachments(atts?: AttachmentInput[]): Promise<No
       }
       await access(filePath, fsConstants.R_OK);
     } catch {
-      throw new Error(`Invalid attachment at index ${index}: path is not a readable file. Check that the attachment path exists, points to a regular file, and is readable.`);
+      throw new Error(`Invalid attachment at index ${index}: path is not a readable local file (URLs and data: URIs are not accepted). Check that the attachment path exists, points to a regular file, and is readable.`);
     }
+    const confinedPath = await assertWithinAttachmentRoots(filePath, index);
 
     attachments.push({
       filename,
-      path: filePath,
-      contentType,
+      path: confinedPath,
+      ...(contentType ? { contentType } : {}),
       contentDisposition,
       ...(cid ? { cid } : {}),
     });
     diagnostics.push({
       index,
       filename,
-      contentType,
+      contentType: reportedContentType,
       size: fileStat.size,
       source: 'path',
       contentDisposition,
@@ -180,8 +212,8 @@ const resolveBcc = (
 const attachmentSchema = z.object({
   filename: z.string().describe('Attachment filename'),
   content: z.string().optional().describe('Base64 encoded content. Provide exactly one of content or path.'),
-  path: z.string().optional().describe('Readable local file path to attach. Provide exactly one of path or content; paths returned by imap_upload_file are accepted.'),
-  contentType: z.string().optional().describe('MIME type. Defaults to application/octet-stream when omitted.'),
+  path: z.string().optional().describe('Readable LOCAL file path to attach (URLs are rejected). Provide exactly one of path or content. The path must live under the attachment download/upload directory (paths returned by imap_upload_file always qualify) or under a directory listed in the IMAP_ATTACHMENT_ROOTS environment variable; anything else is refused so a message can never smuggle out arbitrary files.'),
+  contentType: z.string().optional().describe('MIME type. When omitted it is detected from the filename extension (report.pdf → application/pdf); only set it for unusual extensions.'),
   contentDisposition: z.enum(['attachment', 'inline']).optional().describe(
     'How the attachment is presented. Use "inline" for images referenced from the HTML body via cid: (e.g. a signature/footer banner); omit or use "attachment" for regular downloadable files.'
   ),
@@ -1004,7 +1036,7 @@ export function emailTools(
 
   // Send email tool
   server.registerTool('imap_send_email', {
-    description: 'Compose and send a NEW email via the account\'s SMTP server (a copy is saved to Sent unless disabled; account defaultBcc addresses are always BCC\'d when configured). Use for fresh outbound messages. To respond to an existing message use imap_reply_to_email (keeps threading); to pass a message on use imap_forward_email; to store without sending use imap_save_draft. Supports to/cc/bcc, text and/or HTML, and attachments by base64 content or by file path (see imap_upload_file for large files).',
+    description: 'Compose and send a NEW email via the account\'s SMTP server (a copy is saved to Sent unless disabled; account defaultBcc addresses are always BCC\'d when configured). Use for fresh outbound messages. To respond to an existing message use imap_reply_to_email (keeps threading); to pass a message on use imap_forward_email; to store without sending use imap_save_draft. Supports to/cc/bcc, text and/or HTML, and attachments by base64 content or by local file path (see imap_upload_file for large files; paths are confined to the upload directory or IMAP_ATTACHMENT_ROOTS). Set dryRun=true to validate attachments and compose the MIME without sending.',
     inputSchema: {
       ...accountSelector,
       to: addressList('to', 'Recipient email address(es). Either an array of addresses or a single comma-separated string; both accept "Name <addr@example.com>" form.').nonoptional(),

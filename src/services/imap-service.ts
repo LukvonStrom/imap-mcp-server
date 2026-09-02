@@ -191,7 +191,7 @@ export class ImapService {
       tls: { host: account.host },
       // imapflow opportunistically upgrades a non-`secure` connection via
       // STARTTLS whenever the server advertises it, independent of `secure`.
-      // That's the desired behavior for the common STARTTLS-on-submission-port
+      // That's the desired behavior for the common STARTTLS-on-plain-port-143
       // case, but some providers advertise STARTTLS on a hostname covered only
       // by a shared/wildcard cert that doesn't match — allowStartTLS: false
       // lets an account opt out and stay on the plain connection.

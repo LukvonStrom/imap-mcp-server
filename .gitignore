@@ -39,3 +39,6 @@ temp/
 # MCP Registry publisher OAuth tokens
 .mcpregistry_github_token
 .mcpregistry_registry_token
+
+# Claude Code agent worktrees
+.claude/worktrees/

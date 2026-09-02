@@ -88,7 +88,7 @@ describe('imap_send_email attachment diagnostics', () => {
 
     expect(thrown).toBeInstanceOf(Error);
     const message = (thrown as Error).message;
-    expect(message).toBe('Invalid attachment at index 0: path is not a readable file. Check that the attachment path exists, points to a regular file, and is readable.');
+    expect(message).toBe('Invalid attachment at index 0: path is not a readable local file (URLs and data: URIs are not accepted). Check that the attachment path exists, points to a regular file, and is readable.');
     expect(message).not.toContain(suppliedPath);
     expect(message).not.toContain('missing-secret-report.pdf');
     expect(message).not.toContain('imap-mcp-private-path');
@@ -121,6 +121,7 @@ describe('imap_send_email attachment diagnostics', () => {
 
   it('dry-runs by composing MIME without sending or saving to Sent', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'imap-mcp-attachments-'));
+    process.env.IMAP_ATTACHMENT_ROOTS = dir;
     const filePath = join(dir, 'invoice.pdf');
     await writeFile(filePath, Buffer.from('file bytes'));
 
@@ -146,5 +147,53 @@ describe('imap_send_email attachment diagnostics', () => {
       }],
     });
     expect(JSON.stringify(parsed)).not.toContain(filePath);
+  });
+
+  it('leaves contentType undefined when omitted so nodemailer detects it from the filename', async () => {
+    const result = await sendEmailHandler({
+      ...baseArgs,
+      dryRun: true,
+      attachments: [{ filename: 'report.pdf', content: Buffer.from('pdf').toString('base64') }],
+    });
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.attachmentDiagnostics[0].contentType).toBe('auto');
+    const composed = mockSmtpService.composeRaw.mock.calls[0][1];
+    expect(composed.attachments[0]).not.toHaveProperty('contentType');
+    expect(composed.attachments[0].filename).toBe('report.pdf');
+  });
+
+  it('refuses a path attachment outside the allowed attachment roots', async () => {
+    const outside = await mkdtemp(join(tmpdir(), 'imap-mcp-outside-'));
+    const filePath = join(outside, 'id_rsa');
+    await writeFile(filePath, 'secret');
+    process.env.IMAP_ATTACHMENT_ROOTS = await mkdtemp(join(tmpdir(), 'imap-mcp-allowed-'));
+
+    let thrown: unknown;
+    try {
+      await sendEmailHandler({ ...baseArgs, attachments: [{ filename: 'id_rsa', path: filePath }] });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toContain('outside the allowed attachment directories');
+    expect((thrown as Error).message).not.toContain(outside);
+    expect(mockSmtpService.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('accepts a path attachment under a directory listed in IMAP_ATTACHMENT_ROOTS', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'imap-mcp-roots-'));
+    const filePath = join(dir, 'report.pdf');
+    await writeFile(filePath, 'pdf bytes');
+    process.env.IMAP_ATTACHMENT_ROOTS = dir;
+
+    const result = await sendEmailHandler({
+      ...baseArgs,
+      attachments: [{ filename: 'report.pdf', path: filePath }],
+    });
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.success).toBe(true);
+    const sent = mockSmtpService.sendEmail.mock.calls[0].find((a: any) => a && a.attachments);
+    expect(sent.attachments[0].path).toBeTruthy();
+    expect(payload.attachmentDiagnostics[0]).toMatchObject({ source: 'path', size: 9, contentType: 'auto' });
   });
 });
