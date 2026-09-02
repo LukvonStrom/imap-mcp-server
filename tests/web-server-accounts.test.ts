@@ -9,8 +9,11 @@ import { WebUIServer } from '../src/web/server.js';
 // obvious secrets and assert the /api/accounts response is scrubbed.
 const SECRET = 'imap-plaintext-secret';
 const SMTP_SECRET = 'smtp-plaintext-secret';
+const REFRESH_SECRET = 'oauth-plaintext-refresh-token';
+const ACCESS_SECRET = 'oauth-plaintext-access-token';
 
 const fakeAccountManager = {
+  addAccount: async (acc: any) => ({ ...acc, id: 'created' }),
   getAllAccounts: () => [
     {
       id: 'a1',
@@ -21,6 +24,25 @@ const fakeAccountManager = {
       password: SECRET,
       tls: true,
       smtp: { host: 'smtp.example.com', port: 587, secure: false, password: SMTP_SECRET },
+    },
+    {
+      id: 'o1',
+      name: 'Outlook',
+      host: 'outlook.office365.com',
+      port: 993,
+      user: 'me@outlook.com',
+      password: '',
+      tls: true,
+      authType: 'oauth2',
+      oauth: {
+        provider: 'microsoft',
+        clientId: 'client-123',
+        tenant: 'consumers',
+        refreshToken: REFRESH_SECRET,
+        accessToken: ACCESS_SECRET,
+        accessTokenExpiresAt: 1,
+        scopes: ['https://outlook.office.com/IMAP.AccessAsUser.All'],
+      },
     },
   ],
   getAccount: (id: string) =>
@@ -74,6 +96,41 @@ describe('Web wizard credential exposure', () => {
     expect(accounts[0].smtp?.password).toBeUndefined();
     expect(accounts[0].user).toBe('user@example.com');
     expect(accounts[0].smtp?.host).toBe('smtp.example.com');
+  });
+
+  it('GET /api/accounts strips OAuth tokens but keeps the public OAuth fields', async () => {
+    const res = await fetch(`${baseUrl}/api/accounts`);
+    const raw = await res.text();
+
+    expect(raw).not.toContain(REFRESH_SECRET);
+    expect(raw).not.toContain(ACCESS_SECRET);
+
+    const outlook = JSON.parse(raw)[1];
+    expect(outlook.authType).toBe('oauth2');
+    expect(outlook.oauth.refreshToken).toBeUndefined();
+    expect(outlook.oauth.accessToken).toBeUndefined();
+    expect(outlook.oauth.clientId).toBe('client-123');
+    expect(outlook.oauth.tenant).toBe('consumers');
+    expect(outlook.oauth.scopes).toEqual(['https://outlook.office.com/IMAP.AccessAsUser.All']);
+  });
+
+  it('POST /api/accounts refuses a password login for an OAuth-only provider', async () => {
+    const post = (body: Record<string, unknown>) => fetch(`${baseUrl}/api/accounts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    const byEmail = await post({ name: 'X', email: 'someone@hotmail.com', password: 'pw' });
+    expect(byEmail.status).toBe(400);
+    expect((await byEmail.json()).error).toMatch(/imap_add_oauth_account/);
+
+    const byHost = await post({ name: 'X', email: 'someone@contoso.com', password: 'pw', host: 'outlook.office365.com' });
+    expect(byHost.status).toBe(400);
+
+    const other = await post({ name: 'X', email: 'someone@example.com', password: 'pw', host: 'imap.example.com' });
+    expect(other.status).toBe(200);
+    expect((await other.json()).success).toBe(true);
   });
 
   it('GET /api/accounts/:id also stays password-free', async () => {
