@@ -28,10 +28,24 @@ working in this repository.
     `SmtpService.createTransporter` and fails with the missing variable's name
     instead of dialing out blank. Keep `envVarName()` in sync with its copy in
     `public/js/app.js` (the wizard is a static asset and cannot import it) —
-    `tests/env-credentials.test.ts` asserts the two agree.
+    `tests/env-credentials.test.ts` asserts the two agree. OAuth accounts
+    (`authType: 'oauth2'`) store `oauth.refreshToken` / `oauth.accessToken`
+    encrypted the same way; their env override is
+    `IMAP_MCP_ACCOUNT_<NAME>_OAUTH_REFRESH_TOKEN`, and `assertCredentialsResolved`
+    requires a refresh token instead of a password for them.
+  - `MicrosoftOAuthService` (`src/services/oauth-service.ts`) — Entra
+    device-code flow and refresh-token exchange for Outlook.com / Microsoft 365
+    (XOAUTH2). Keeps pending flows in memory keyed by a random `flowId` (the
+    `device_code` never leaves the process), caches access tokens with a
+    five-minute refresh margin, and persists rotated tokens through
+    `AccountManager.updateOAuthTokens`. Talks only to
+    `https://login.microsoftonline.com`. `ImapService` / `SmtpService` obtain
+    tokens from it via `getValidAccessToken` (IMAP retries once with
+    `forceRefresh` on an `authenticationFailed` error).
   - `SpamService` — disposable/known-spam domain detection.
 - **Tools** (`src/tools/`), grouped by area:
-  - `account-tools.ts` — add / update / list / remove / connect / disconnect / test.
+  - `account-tools.ts` — add / update / list / remove / connect / disconnect / test,
+    plus the OAuth pair `imap_add_oauth_account` / `imap_complete_oauth_login`.
   - `email-tools.ts` — search, get, latest, send, reply, forward, save draft,
     mark read/unread, delete, bulk delete, move, attachments, upload, threads.
   - `folder-tools.ts` — list, status, create, unread counts.
@@ -55,7 +69,7 @@ npm run setup        # launch the web setup wizard
 ```
 
 Always run `npm run build` **and** `npm test` before committing changes that
-touch `src/`. Keep the suite green (currently 353 tests).
+touch `src/`. Keep the suite green (currently 425 tests).
 
 > Note: `npm run lint` (`tsc --noEmit`) is memory-hungry on this project — the
 > MCP SDK's `registerTool` generics are deep enough to surface a pre-existing
@@ -79,7 +93,9 @@ touch `src/`. Keep the suite green (currently 353 tests).
    backward-compatible changes (new optional fields) over breaking ones.
 4. **Credentials stay local.** Do not add telemetry, analytics, crash reporting,
    or any third-party network calls. The only outbound connections are to the
-   user's own IMAP/SMTP servers.
+   user's own IMAP/SMTP servers — plus, for OAuth accounts only,
+   `login.microsoftonline.com` for the token exchange/refresh. Any new outbound
+   host needs the same treatment: documented in README.md and SECURITY.md.
 5. **Validate and sanitize file paths** for attachment upload/download (already
    done via `path.basename`); keep writes confined to the configured directories.
 

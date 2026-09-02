@@ -9,7 +9,8 @@ control**.
 - **Local execution.** The server runs entirely on your own machine as a local
   MCP process (stdio). It is not a hosted service and does not require any
   account with this project.
-- **Credential storage.** IMAP/SMTP credentials are stored encrypted with
+- **Credential storage.** IMAP/SMTP credentials — passwords and, for OAuth 2.0
+  accounts, the refresh and access tokens — are stored encrypted with
   **AES-256-CBC** in `~/.imap-mcp/accounts.json`. The encryption key is generated
   locally and kept at `~/.imap-mcp/.key`. The store directory and both files are
   written owner-only (`0700`/`0600`) so other local users cannot read them;
@@ -18,7 +19,12 @@ control**.
   reports.
 - **No third-party data sharing.** The only outbound network connections are to
   the IMAP and SMTP servers **you** configure. Email content and credentials are
-  never sent anywhere else.
+  never sent anywhere else. The one addition for **OAuth 2.0 accounts**
+  (Outlook.com / Microsoft 365): the server also contacts
+  `login.microsoftonline.com` — Microsoft's own identity service — to run the
+  device-code sign-in and to exchange the refresh token for access tokens.
+  Only the OAuth parameters (client ID, tenant, scopes, device/refresh token)
+  go there; never mail content or the mailbox password.
 - **Your MCP client sees your mail.** Email content returned by these tools is
   passed to whichever MCP client/LLM you connect (e.g. Claude, ChatGPT, Cursor).
   Review that client's own privacy terms; treat any connected model as a party
@@ -27,7 +33,10 @@ control**.
 ## Recommendations for users
 
 - Use **app-specific passwords** where your provider supports them (Gmail,
-  iCloud, Yahoo, Fastmail, …) instead of your primary password.
+  iCloud, Yahoo, Fastmail, …) instead of your primary password. Outlook.com and
+  Microsoft 365 accept neither and must use the OAuth 2.0 flow
+  (`imap_add_oauth_account`); revoke that consent in your Microsoft account's
+  "Apps and services" page if you stop using the server.
 - Keep `~/.imap-mcp/` readable only by your user account.
 - Prefer least-privilege accounts/folders when possible.
 - Be deliberate with destructive tools (`imap_delete_email`,
