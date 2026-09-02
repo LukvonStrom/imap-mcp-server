@@ -14,6 +14,7 @@ A powerful Model Context Protocol (MCP) server that provides seamless IMAP email
 - 🌐 **Web-Based Setup Wizard**: Easy account configuration with provider presets
 - 📱 **15+ Email Providers**: Pre-configured settings for Gmail, Outlook, Yahoo, and more
 - 🔗 **Auto SMTP Configuration**: Automatic SMTP settings based on IMAP provider
+- 🪪 **Microsoft OAuth 2.0**: Device-code sign-in for Outlook.com / Hotmail / Live and Microsoft 365 (XOAUTH2) — Microsoft no longer accepts passwords for IMAP/SMTP
 
 ## Installation
 
@@ -126,6 +127,7 @@ non-alphanumeric character replaced by `_`. For an account named `Work Gmail`
 | `IMAP_MCP_ACCOUNT_WORK_GMAIL_IMAP_PASSWORD` | IMAP password |
 | `IMAP_MCP_ACCOUNT_WORK_GMAIL_SMTP_USERNAME` | SMTP username (`smtp.user`) |
 | `IMAP_MCP_ACCOUNT_WORK_GMAIL_SMTP_PASSWORD` | SMTP password |
+| `IMAP_MCP_ACCOUNT_WORK_GMAIL_OAUTH_REFRESH_TOKEN` | OAuth 2.0 refresh token (`oauth.refreshToken`, OAuth accounts only) |
 
 Notes:
 - Overrides apply **only to existing accounts**; if no account's normalized name
@@ -168,11 +170,93 @@ By default accounts and the encryption key live in `~/.imap-mcp/`. Set
 to keep several isolated account sets side by side or to place the store on an
 encrypted volume. The directory is created owner-only (`0700`) if missing.
 
+### Outlook.com / Microsoft 365 (OAuth 2.0)
+
+Microsoft has switched off **basic authentication** for IMAP and SMTP: neither
+your account password nor an app password is accepted any more, for personal
+Outlook.com / Hotmail / Live / MSN mailboxes and for Microsoft 365. Those
+accounts must sign in with **OAuth 2.0** (XOAUTH2). This server supports that
+with the **device-code flow**: the assistant gives you a short code and a URL,
+you sign in once in a browser, and the server stores a refresh token
+(encrypted, next to your other credentials) and mints short-lived access
+tokens from it whenever it connects.
+
+Microsoft ties the sign-in to an **app registration** in Microsoft Entra ID, so
+a one-time setup is needed to get an *Application (client) ID*:
+
+1. Open the [Microsoft Entra admin center](https://entra.microsoft.com) (a
+   personal Microsoft account works — it creates a small default tenant) and go
+   to **Identity → Applications → App registrations → New registration**.
+2. Give it a name (e.g. `imap-mcp-server`).
+3. **Supported account types**: choose
+   *Personal Microsoft accounts only* for Outlook.com / Hotmail / Live, or
+   *Accounts in any organizational directory and personal Microsoft accounts*
+   if you also want to use it for Microsoft 365 work accounts. (For a
+   single-organization setup, *Accounts in this organizational directory only*
+   is fine — you then sign in with your tenant ID as `tenant`, see below.)
+4. Leave **Redirect URI** empty and click **Register**.
+5. In the new registration open **Authentication** and set
+   **Allow public client flows** to **Yes**, then save. (This is what enables
+   the device-code flow.)
+6. Open **API permissions → Add a permission → APIs my organization uses**,
+   search for **Office 365 Exchange Online**, choose **Delegated permissions**,
+   and add **`IMAP.AccessAsUser.All`** and **`SMTP.Send`**. (`offline_access`
+   is requested automatically at sign-in.)
+7. On the **Overview** page copy the **Application (client) ID**.
+
+Give the client ID to the server either per call (`clientId`) or once via the
+environment variable **`IMAP_MCP_MS_CLIENT_ID`** in your MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "imap": {
+      "command": "npx",
+      "args": ["-y", "@nikolausm/imap-mcp-server"],
+      "env": { "IMAP_MCP_MS_CLIENT_ID": "00000000-0000-0000-0000-000000000000" }
+    }
+  }
+}
+```
+
+Then add the mailbox from your assistant:
+
+> Add my Outlook account `me@outlook.com` using OAuth.
+
+1. The assistant calls **`imap_add_oauth_account`** and shows you a URL
+   (https://microsoft.com/devicelogin) and a code such as `ABCD1234`.
+2. Open the URL, enter the code, and sign in to the mailbox. Approve the
+   requested permissions.
+3. The assistant calls **`imap_complete_oauth_login`**, which waits for the
+   sign-in (up to ~25 s per call; it retries while the result is `pending`),
+   stores the account with `authType: "oauth2"`, and runs a connection test.
+
+**Tenant.** `imap_add_oauth_account` signs in against the `consumers` tenant
+by default, which is right for personal accounts. For Microsoft 365 pass
+`tenant` as `organizations`, `common`, or your tenant's GUID / verified domain
+(`contoso.onmicrosoft.com`) — a single-tenant app registration *requires* the
+GUID or domain.
+
+**Tokens.** The refresh token and the cached access token are stored AES-256
+encrypted in `~/.imap-mcp/accounts.json`, exactly like passwords, and are never
+returned by any tool. Access tokens are refreshed automatically about five
+minutes before they expire; if a refresh is rejected (`invalid_grant` — the
+token expired or was revoked), the error tells you to run
+`imap_add_oauth_account` again with the account's `accountId`, which replaces
+the tokens in place. The refresh token can also be supplied through
+`IMAP_MCP_ACCOUNT_<NAME>_OAUTH_REFRESH_TOKEN` (see above). For OAuth accounts
+the server additionally contacts `login.microsoftonline.com` for the token
+exchange and refresh — that is the only host besides your IMAP/SMTP servers.
+
+The web setup wizard does not run the OAuth flow; when you pick Outlook or
+Microsoft 365 there it points you to the tool flow above.
+
 ### Supported Email Providers
 
 The setup wizard includes pre-configured settings for:
 - Gmail / Google Workspace
-- Microsoft Outlook / Hotmail / Live
+- Microsoft Outlook / Hotmail / Live and Microsoft 365 — **OAuth 2.0 only**, via
+  `imap_add_oauth_account` (see above)
 - Yahoo Mail
 - Apple iCloud Mail
 - GMX
@@ -358,7 +442,9 @@ Once configured, the IMAP MCP server provides the following tools in Claude:
   ```
   Parameters:
   - accountId: ID of the account to update
-  - name, host, port, user, password, tls, allowStartTLS, tlsRejectUnauthorized, email: IMAP fields (all optional)
+  - name, host, port, user, password, tls, allowStartTLS, tlsRejectUnauthorized, email: IMAP fields (all optional;
+      password / smtpPassword are rejected for OAuth 2.0 accounts — re-authorize
+      those with imap_add_oauth_account instead)
   - smtpHost, smtpPort, smtpSecure, smtpUser, smtpPassword: SMTP fields (optional)
   - saveToSent: Save sent emails to the Sent folder (optional)
   - sentFolder: Explicit Sent-folder override (optional). Pass an empty string
@@ -367,7 +453,39 @@ Once configured, the IMAP MCP server provides the following tools in Claude:
       string to clear
   ```
 
-- **imap_list_accounts**: List all configured accounts
+- **imap_add_oauth_account**: Start adding an Outlook.com / Hotmail / Live /
+  Microsoft 365 mailbox with OAuth 2.0 (device-code flow) — step 1 of 2. See
+  [Outlook.com / Microsoft 365 (OAuth 2.0)](#outlookcom--microsoft-365-oauth-20).
+  ```
+  Parameters:
+  - name: Friendly name (optional, defaults to the email address)
+  - email: Mailbox address; used as IMAP/SMTP username and From: address
+  - provider: "microsoft" (default; the only provider so far)
+  - clientId: Entra Application (client) ID (optional when IMAP_MCP_MS_CLIENT_ID is set)
+  - tenant: "consumers" (default, personal accounts), "organizations", "common",
+      or a tenant GUID / verified domain (Microsoft 365)
+  - accountId: Existing account to re-authorize / convert to OAuth (optional)
+  - host, port, smtpHost, smtpPort: Endpoint overrides (optional; defaults
+      outlook.office365.com:993 and smtp-mail.outlook.com:587)
+  - sentFolder, defaultBcc: As for imap_add_account (optional)
+  Returns: { flowId, userCode, verificationUri, expiresAt, instructions }
+  ```
+
+- **imap_complete_oauth_login**: Step 2 — waits for the user to finish the
+  sign-in, stores the account with its encrypted tokens, and tests it.
+  ```
+  Parameters:
+  - flowId: The flowId from imap_add_oauth_account
+  - maxWaitSeconds: How long one call may wait (1–25, default 25; optional)
+  Returns: { status: "pending", retryAfterSeconds } while the user has not
+      finished (call again), or { status: "complete", accountId, ...,
+      connectionTest } — never tokens. "expired" / "denied" / "error" mean
+      start over with imap_add_oauth_account.
+  ```
+
+- **imap_list_accounts**: List all configured accounts. Each entry includes
+  `authType` (`"password"` or `"oauth2"`); OAuth accounts also carry
+  `oauth: { provider, tenant, clientId, scopes }`. Tokens are never returned.
 
 - **imap_remove_account**: Remove an account
   ```
@@ -712,7 +830,8 @@ Once configured, the IMAP MCP server provides the following tools in Claude:
 
 ## Security
 
-- Credentials are encrypted using AES-256-CBC encryption
+- Credentials are encrypted using AES-256-CBC encryption — passwords and, for
+  OAuth 2.0 accounts, the refresh and access tokens alike
 - Encryption keys are stored separately in `~/.imap-mcp/.key`
 - Account configurations are stored in `~/.imap-mcp/accounts.json`
 - The store directory, `.key`, and `accounts.json` are written owner-only

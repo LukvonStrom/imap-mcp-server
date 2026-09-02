@@ -2,6 +2,7 @@ import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { ImapAccount, EmailMessage, EmailContent, EmailBodyFormat, EmailLocation, Folder, MessageExportRow, SearchCriteria, SearchOptions, SentSaveResult, DEFAULT_BODY_MAX_LENGTH, DEFAULT_BODY_FORMAT, isSystemFlag } from '../types/index.js';
 import type { AccountManager } from './account-manager.js';
+import { MicrosoftOAuthService } from './oauth-service.js';
 import { htmlToMarkdown, normalizeWhitespace } from './html-to-markdown.js';
 import { assertCredentialsResolved } from '../utils/env-credentials.js';
 
@@ -90,6 +91,16 @@ interface ConnectionState {
   isConnected: boolean;
 }
 
+/** imapflow marks LOGIN / AUTHENTICATE rejections with `authenticationFailed`. */
+function isAuthenticationFailure(err: unknown): boolean {
+  return !!err && typeof err === 'object' && (err as { authenticationFailed?: boolean }).authenticationFailed === true;
+}
+
+/** The `auth` block handed to imapflow: password login or XOAUTH2 access token. */
+type ImapAuth =
+  | { user: string; pass: string; loginMethod?: string }
+  | { user: string; accessToken: string };
+
 interface EmailContentOptions {
   includeAttachmentText?: boolean;
   maxAttachmentTextBytes?: number;
@@ -171,22 +182,43 @@ export class ImapService {
   private reconnectAttempts: Map<string, number> = new Map();
   private maxReconnectAttempts = 3;
   private accountManager?: AccountManager;
+  private oauthService?: MicrosoftOAuthService;
 
   setAccountManager(accountManager: AccountManager): void {
     this.accountManager = accountManager;
   }
 
-  async connect(account: ImapAccount): Promise<void> {
-    const existing = this.connections.get(account.id);
-    if (existing?.isConnected) {
-      return;
+  /** Share one OAuth service (and its token cache) with the SMTP side and the tools. */
+  setOAuthService(oauthService: MicrosoftOAuthService): void {
+    this.oauthService = oauthService;
+  }
+
+  private getOAuthService(): MicrosoftOAuthService {
+    if (!this.oauthService) {
+      this.oauthService = new MicrosoftOAuthService(this.accountManager);
     }
+    return this.oauthService;
+  }
 
-    // Fail with the missing variable name rather than dialing out with a blank
-    // credential and getting back an indistinguishable "AUTHENTICATE failed".
-    assertCredentialsResolved(account, 'imap');
+  /**
+   * Build imapflow's `auth` block. Password accounts log in as before; OAuth
+   * accounts get a fresh-enough access token (refreshed and persisted by the
+   * OAuth service when the cached one is about to expire) and no password.
+   */
+  private async buildAuth(account: ImapAccount): Promise<ImapAuth> {
+    if (account.authType === 'oauth2') {
+      const accessToken = await this.getOAuthService().getValidAccessToken(account);
+      return { user: account.user, accessToken };
+    }
+    return {
+      user: account.user,
+      pass: account.password,
+      loginMethod: account.loginMethod,
+    };
+  }
 
-    const client = new ImapFlow({
+  private createClient(account: ImapAccount, auth: ImapAuth): ImapFlow {
+    return new ImapFlow({
       host: account.host,
       port: account.port,
       secure: account.tls,
@@ -208,35 +240,68 @@ export class ImapService {
       // by a shared/wildcard cert that doesn't match — allowStartTLS: false
       // lets an account opt out and stay on the plain connection.
       ...(account.allowStartTLS === false ? { doSTARTTLS: false } : {}),
-      auth: {
-        user: account.user,
-        pass: account.password,
-        loginMethod: account.loginMethod,
-      },
+      auth,
       logger: false,
     });
+  }
 
-    // Set up event handlers for connection management
-    client.on('error', (err) => {
-      console.error(`IMAP error for account ${account.id}:`, err.message);
-      const state = this.connections.get(account.id);
-      if (state) {
-        state.isConnected = false;
-      }
-    });
-
-    client.on('close', () => {
-      const state = this.connections.get(account.id);
-      if (state) {
-        state.isConnected = false;
-      }
-    });
+  /**
+   * Construct a client and connect it. For OAuth accounts an authentication
+   * failure gets one retry with a force-refreshed access token — the cached
+   * token can look valid locally yet be rejected (revoked, or clock skew).
+   * ImapFlow instances are single-use, so the retry builds a new client.
+   * `onCreate` runs for every client built, before connecting (event wiring).
+   */
+  private async openClient(account: ImapAccount, onCreate?: (client: ImapFlow) => void): Promise<ImapFlow> {
+    const attempt = async (auth: ImapAuth): Promise<ImapFlow> => {
+      const client = this.createClient(account, auth);
+      onCreate?.(client);
+      await client.connect();
+      return client;
+    };
 
     try {
-      await client.connect();
+      return await attempt(await this.buildAuth(account));
     } catch (err) {
-      throw new Error(enrichConnectionError(err, account.host));
+      if (account.authType !== 'oauth2' || !isAuthenticationFailure(err)) {
+        throw new Error(enrichConnectionError(err, account.host));
+      }
+      const accessToken = await this.getOAuthService().forceRefresh(account);
+      try {
+        return await attempt({ user: account.user, accessToken });
+      } catch (retryErr) {
+        throw new Error(enrichConnectionError(retryErr, account.host));
+      }
     }
+  }
+
+  async connect(account: ImapAccount): Promise<void> {
+    const existing = this.connections.get(account.id);
+    if (existing?.isConnected) {
+      return;
+    }
+
+    // Fail with the missing variable name rather than dialing out with a blank
+    // credential and getting back an indistinguishable "AUTHENTICATE failed".
+    assertCredentialsResolved(account, 'imap');
+
+    const client = await this.openClient(account, (c) => {
+      // Set up event handlers for connection management
+      c.on('error', (err) => {
+        console.error(`IMAP error for account ${account.id}:`, err.message);
+        const state = this.connections.get(account.id);
+        if (state) {
+          state.isConnected = false;
+        }
+      });
+
+      c.on('close', () => {
+        const state = this.connections.get(account.id);
+        if (state) {
+          state.isConnected = false;
+        }
+      });
+    });
 
     this.connections.set(account.id, {
       client,
@@ -1908,29 +1973,11 @@ export class ImapService {
   }
 
   async testConnection(account: ImapAccount): Promise<{ success: boolean; folders?: string[]; messageCount?: number; error?: string }> {
-    const testClient = new ImapFlow({
-      host: account.host,
-      port: account.port,
-      secure: account.tls,
-      // Validate the certificate against the host we actually dial; see connect().
-      tls: {
-        host: account.host,
-        // Certificate validation stays on unless the account explicitly opts
-        // out (tlsRejectUnauthorized: false) for self-signed/internal servers.
-        rejectUnauthorized: account.tlsRejectUnauthorized !== false,
-      },
-      // See connect() — allowStartTLS: false opts out of the opportunistic upgrade.
-      ...(account.allowStartTLS === false ? { doSTARTTLS: false } : {}),
-      auth: {
-        user: account.user,
-        pass: account.password,
-        loginMethod: account.loginMethod,
-      },
-      logger: false,
-    });
-
     try {
-      await testClient.connect();
+      assertCredentialsResolved(account, 'imap');
+      // Same TLS / STARTTLS / auth handling as connect(), including the
+      // one-shot token refresh for OAuth accounts.
+      const testClient = await this.openClient(account);
 
       // List folders
       const folderList = await testClient.list();
@@ -1953,6 +2000,8 @@ export class ImapService {
         messageCount,
       };
     } catch (err) {
+      // openClient() already enriched connection errors; this only wraps
+      // failures from the folder/status calls afterwards.
       return {
         success: false,
         error: enrichConnectionError(err, account.host),

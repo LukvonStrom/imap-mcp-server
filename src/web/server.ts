@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import open from 'open';
 import { AccountManager } from '../services/account-manager.js';
 import { ImapService } from '../services/imap-service.js';
-import { emailProviders, getProviderByEmail } from '../providers/email-providers.js';
+import { emailProviders, getProviderByEmail, EmailProvider } from '../providers/email-providers.js';
 import { ImapAccount } from '../types/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -16,15 +16,36 @@ const __dirname = path.dirname(__filename);
 // Strip credentials before an account crosses the wizard's HTTP boundary. The
 // API is unauthenticated and CORS-open, so any local page could otherwise read
 // plaintext IMAP/SMTP passwords out of a response. Returns a shallow copy with
-// `password` and `smtp.password` removed.
-function stripAccountSecrets<T extends Record<string, any>>(account: T): Omit<T, 'password'> {
+// `password`, `smtp.password`, and the OAuth `refreshToken` / `accessToken`
+// removed (the OAuth client ID, tenant, and scopes are not secrets and stay).
+export function stripAccountSecrets<T extends Record<string, any>>(account: T): Omit<T, 'password'> {
   const { password: _password, ...rest } = account;
   const safe: Record<string, any> = { ...rest };
   if (safe.smtp && typeof safe.smtp === 'object' && 'password' in safe.smtp) {
     safe.smtp = { ...safe.smtp };
     delete safe.smtp.password;
   }
+  if (safe.oauth && typeof safe.oauth === 'object') {
+    safe.oauth = { ...safe.oauth };
+    delete safe.oauth.refreshToken;
+    delete safe.oauth.accessToken;
+    delete safe.oauth.accessTokenExpiresAt;
+  }
   return safe as Omit<T, 'password'>;
+}
+
+// Providers whose IMAP/SMTP no longer accept passwords. The wizard only does
+// password logins, so refuse to store one for them rather than saving an
+// account that can never connect (the tool flow imap_add_oauth_account is the
+// supported path).
+function oauthOnlyProviderFor(email: string | undefined, host: string | undefined): EmailProvider | undefined {
+  const byEmail = email ? getProviderByEmail(email) : undefined;
+  if (byEmail?.authType === 'oauth2') return byEmail;
+  if (host) {
+    const byHost = emailProviders.find(p => p.authType === 'oauth2' && p.imapHost.toLowerCase() === host.toLowerCase());
+    if (byHost) return byHost;
+  }
+  return undefined;
 }
 
 export class WebUIServer {
@@ -140,6 +161,18 @@ export class WebUIServer {
           imapUsernameFromEnv, imapPasswordFromEnv,
           smtpUsernameFromEnv, smtpPasswordFromEnv,
         } = req.body;
+
+        const oauthOnly = oauthOnlyProviderFor(email, host);
+        if (oauthOnly) {
+          res.status(400).json({
+            success: false,
+            error: `${oauthOnly.displayName} no longer accepts passwords or app passwords for IMAP/SMTP. ` +
+              'Add this account through your MCP client with the OAuth 2.0 tools instead ' +
+              '(imap_add_oauth_account, then imap_complete_oauth_login). See the README section ' +
+              '"Outlook.com / Microsoft 365 (OAuth 2.0)".',
+          });
+          return;
+        }
 
         // Auto-detect provider if not specified
         let imapHost = host;

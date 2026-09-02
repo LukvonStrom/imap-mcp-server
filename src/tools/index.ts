@@ -3,6 +3,7 @@ import { ImapService } from '../services/imap-service.js';
 import { AccountManager } from '../services/account-manager.js';
 import { SmtpService } from '../services/smtp-service.js';
 import { SpamService } from '../services/spam-service.js';
+import { MicrosoftOAuthService } from '../services/oauth-service.js';
 import { accountTools } from './account-tools.js';
 import { emailTools } from './email-tools.js';
 import { folderTools } from './folder-tools.js';
@@ -130,7 +131,8 @@ export function registerTools(
   imapService: ImapService,
   accountManager: AccountManager,
   smtpService: SmtpService,
-  spamService: SpamService
+  spamService: SpamService,
+  oauthService: MicrosoftOAuthService = new MicrosoftOAuthService(accountManager)
 ): void {
   const enabled = resolveEnabledTools();
 
@@ -144,7 +146,7 @@ export function registerTools(
     : server;
 
   // Register account management tools
-  accountTools(target, accountManager, imapService, smtpService);
+  accountTools(target, accountManager, imapService, smtpService, oauthService);
 
   // Register email operation tools
   emailTools(target, imapService, accountManager, smtpService);

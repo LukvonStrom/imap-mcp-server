@@ -1,14 +1,17 @@
 import type { ImapAccount } from '../types/index.js';
 
 /**
- * Env-variable suffixes for the four credentials an account can source from the
- * environment instead of `accounts.json`.
+ * Env-variable suffixes for the credentials an account can source from the
+ * environment instead of `accounts.json`. The OAuth refresh token is the
+ * credential of an `authType: 'oauth2'` account; the password suffixes do not
+ * apply to those accounts.
  */
 export const ENV_CREDENTIAL_SUFFIXES = {
   imapUser: '_IMAP_USERNAME',
   imapPassword: '_IMAP_PASSWORD',
   smtpUser: '_SMTP_USERNAME',
   smtpPassword: '_SMTP_PASSWORD',
+  oauthRefreshToken: '_OAUTH_REFRESH_TOKEN',
 } as const;
 
 /**
@@ -40,7 +43,20 @@ export function assertCredentialsResolved(account: ImapAccount, channel: 'imap' 
     if (value === '') missing.push(envVarName(account.name, suffix));
   };
 
-  if (channel === 'imap') {
+  if (account.authType === 'oauth2') {
+    // OAuth accounts have no password at all; their credential is the refresh
+    // token. Both IMAP and SMTP authenticate as `account.user` with XOAUTH2.
+    if (!account.oauth) {
+      throw new Error(
+        `Account "${account.name}" is configured for OAuth 2.0 but has no oauth settings. ` +
+        `Re-authorize it with imap_add_oauth_account (pass accountId to update this account).`
+      );
+    }
+    require(account.user, ENV_CREDENTIAL_SUFFIXES.imapUser);
+    if (!account.oauth.refreshToken) {
+      missing.push(envVarName(account.name, ENV_CREDENTIAL_SUFFIXES.oauthRefreshToken));
+    }
+  } else if (channel === 'imap') {
     require(account.user, ENV_CREDENTIAL_SUFFIXES.imapUser);
     require(account.password, ENV_CREDENTIAL_SUFFIXES.imapPassword);
   } else {
@@ -62,10 +78,13 @@ export function assertCredentialsResolved(account: ImapAccount, channel: 'imap' 
   if (missing.length === 0) return;
 
   const label = channel === 'imap' ? 'IMAP' : 'SMTP';
+  const fix = account.authType === 'oauth2'
+    ? 'or re-authorize the account via imap_add_oauth_account (pass its accountId)'
+    : 'or store the credentials on the account via imap_update_account';
   throw new Error(
     `Account "${account.name}" has ${label} credentials marked as environment-managed, ` +
     `but ${missing.length === 1 ? 'this variable was' : 'these variables were'} not set when ` +
     `the server started: ${missing.join(', ')}. Set ${missing.length === 1 ? 'it' : 'them'} ` +
-    `and restart the server, or store the credentials on the account via imap_update_account.`
+    `and restart the server, ${fix}.`
   );
 }

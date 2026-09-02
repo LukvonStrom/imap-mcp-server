@@ -84,6 +84,38 @@ describe('assertCredentialsResolved', () => {
     const acc = account({ smtp: { host: 'smtp.gmail.com', port: 587, secure: false, user: 'smtpuser', password: 'smtppass' } } as Partial<ImapAccount>);
     expect(() => assertCredentialsResolved(acc, 'smtp')).not.toThrow();
   });
+
+  describe('OAuth 2.0 accounts', () => {
+    const oauthAccount = (refreshToken: string) => account({
+      name: 'Outlook',
+      password: '',
+      authType: 'oauth2',
+      oauth: { provider: 'microsoft', clientId: 'c', tenant: 'consumers', refreshToken, scopes: [] },
+    });
+
+    it('does not demand a password — the refresh token is the credential', () => {
+      expect(() => assertCredentialsResolved(oauthAccount('refresh'), 'imap')).not.toThrow();
+      expect(() => assertCredentialsResolved(oauthAccount('refresh'), 'smtp')).not.toThrow();
+    });
+
+    it('names the OAUTH_REFRESH_TOKEN variable when the refresh token is missing', () => {
+      for (const channel of ['imap', 'smtp'] as const) {
+        expect(() => assertCredentialsResolved(oauthAccount(''), channel))
+          .toThrow(/IMAP_MCP_ACCOUNT_OUTLOOK_OAUTH_REFRESH_TOKEN/);
+        expect(() => assertCredentialsResolved(oauthAccount(''), channel))
+          .not.toThrow(/IMAP_PASSWORD/);
+      }
+    });
+
+    it('points at imap_add_oauth_account rather than imap_update_account', () => {
+      expect(() => assertCredentialsResolved(oauthAccount(''), 'imap')).toThrow(/imap_add_oauth_account/);
+    });
+
+    it('fails clearly when the oauth block itself is missing', () => {
+      expect(() => assertCredentialsResolved(account({ authType: 'oauth2', oauth: undefined }), 'imap'))
+        .toThrow(/no oauth settings/);
+    });
+  });
 });
 
 // The wizard is a static asset and cannot import the server module, so the
