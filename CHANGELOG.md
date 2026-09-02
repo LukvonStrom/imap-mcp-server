@@ -20,6 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `IMAP_MCP_CONFIG_DIR` relocates the credential store. From githappens' fork.
 - `allowStartTLS` opt-out for opportunistic STARTTLS (upstream PR #159).
 - Attachment validation, diagnostics and `dryRun` for `imap_send_email` (upstream PR #161).
+- Every tool now declares a human-readable `title` and the MCP tool annotations
+  (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) via
+  typed presets in `src/tools/annotations.ts`, so clients can auto-approve reads
+  and confirm deletes/sends without a server-side allowlist. Deletes,
+  `imap_remove_account`, and send/reply/forward are `destructiveHint: true`;
+  only mail delivery and the Microsoft OAuth tools are `openWorldHint: true`.
+  `tests/tool-annotations.test.ts` keeps the `readOnlyHint` set identical to
+  `READ_ONLY_TOOLS` (`IMAP_MCP_READ_ONLY`). Tool names, descriptions, inputs, and
+  outputs are unchanged.
 
 ### Changed
 - Path-sourced attachments are confined to the download/upload directory or

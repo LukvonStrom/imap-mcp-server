@@ -114,5 +114,20 @@ touch `src/`. Keep the suite green (currently 459 tests).
   reason and a migration note.
 - Zod schemas describe every tool input; every field gets a `.describe()` that
   tells an LLM **when and how** to use it.
+- **Every tool declares a `title` and MCP `annotations`** (`readOnlyHint`,
+  `destructiveHint`, `idempotentHint`, `openWorldHint`) — clients use these to
+  decide which calls to auto-approve and which to confirm. Pick a preset from
+  `src/tools/annotations.ts` (`READ_ONLY`, `CONNECTION`,
+  `READ_ONLY_LOCAL_OUTPUT`, `MUTATING`, `LOCAL_CONFIG`, `CREATES`,
+  `DESTRUCTIVE`, `SENDS_MAIL`, `NETWORK_AUTH`; each documents its reasoning)
+  and spread an override only when one hint genuinely differs. Rules of thumb:
+  anything that deletes or sends mail is `destructiveHint: true`; only
+  delivery to third parties and the OAuth identity host are
+  `openWorldHint: true` (the user's own IMAP/SMTP server is closed-world);
+  `readOnlyHint: true` tools must also be listed in `READ_ONLY_TOOLS`
+  (`src/tools/index.ts`) — `tests/tool-annotations.test.ts` enforces all of
+  this. Tools still return JSON as text content; `outputSchema` /
+  `structuredContent` is a future, deliberately separate step because it
+  changes the response shape.
 - Match the surrounding code style; keep error handling and connection cleanup
   consistent with existing tools.

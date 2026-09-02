@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { READ_ONLY_LOCAL_OUTPUT } from './annotations.js';
 import { createWriteStream, mkdirSync } from 'fs';
 import { once } from 'events';
 import { basename, join } from 'path';
@@ -157,6 +158,8 @@ function ruleCandidates(
 
 export function exportTools(server: McpServer, imapService: ImapService, accountManager: AccountManager): void {
   server.registerTool('imap_export_messages', {
+    title: 'Export message metadata',
+    annotations: { ...READ_ONLY_LOCAL_OUTPUT, idempotentHint: false }, // each export writes a new timestamped file
     description:
       'Export lightweight per-message metadata (folder, uid, date, sender address/name/domain, recipients, subject, read/flagged/answered state, size, attachment flag, List-Id / List-Unsubscribe, Message-ID) for MANY messages to a local JSONL or CSV file, and return aggregate statistics plus rule candidates. ' +
       'Use this to analyse a mailbox offline — e.g. to decide which Outlook.com / Gmail server-side rules to create (move newsletters, file receipts, delete never-read senders) — without pulling every message through the conversation. Bodies are never exported. ' +

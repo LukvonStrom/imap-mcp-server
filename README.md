@@ -398,6 +398,25 @@ The read-only subset is: `imap_list_accounts`, `imap_connect`, `imap_disconnect`
 `imap_get_unread_count`, `imap_check_spam`, `imap_domain_stats`,
 `imap_list_spam_domains`.
 
+#### Tool annotations (client-side confirmation)
+
+Every tool also carries the [MCP tool annotations](https://modelcontextprotocol.io/specification/latest/server/tools#tool-annotations)
+and a short `title`, so a client such as Claude Desktop or Claude Code can tell
+`imap_search_emails` from `imap_bulk_delete_by_search` and decide on its own
+which calls to auto-approve and which to confirm with you — even when all tools
+are exposed:
+
+| Hint | Meaning for the client | `true` for |
+| --- | --- | --- |
+| `readOnlyHint` | Nothing in the mailbox, the account store, or local config changes; safe to run without asking. | Exactly the `IMAP_MCP_READ_ONLY` subset above (attachment download and export write only to the local download directory). |
+| `destructiveHint` | The effect cannot be undone by this server — confirm before calling. | Every delete (`imap_delete_*`, `imap_bulk_delete*`, `imap_delete_folder`), `imap_remove_account`, and sending mail (`imap_send_email`, `imap_reply_to_email`, `imap_forward_email`). |
+| `idempotentHint` | Repeating the call with the same arguments has no additional effect (a retry is harmless). | Reads, flag/keyword/move/folder edits, config edits. `false` for deletes, sends, drafts, uploads, exports, and adding accounts. |
+| `openWorldHint` | The tool reaches beyond your own mail server — third-party recipients or another host. | Sending mail and the Microsoft OAuth sign-in tools (`login.microsoftonline.com`). |
+
+Annotations are hints; they do not replace `IMAP_MCP_READ_ONLY` /
+`IMAP_MCP_ENABLED_TOOLS`, which remove tools from the list entirely. The
+`readOnlyHint: true` set and `IMAP_MCP_READ_ONLY` are kept identical by a test.
+
 ## Usage
 
 Once configured, the IMAP MCP server provides the following tools in Claude:

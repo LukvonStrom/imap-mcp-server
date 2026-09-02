@@ -1,4 +1,5 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { CONNECTION, CREATES, DESTRUCTIVE, LOCAL_CONFIG, NETWORK_AUTH, READ_ONLY } from './annotations.js';
 import { AccountManager } from '../services/account-manager.js';
 import { ImapService } from '../services/imap-service.js';
 import { SmtpService } from '../services/smtp-service.js';
@@ -48,6 +49,8 @@ export function accountTools(
 ): void {
   // Add account tool
   server.registerTool('imap_add_account', {
+    title: 'Add account',
+    annotations: CREATES,
     description: 'Add a new IMAP account configuration',
     inputSchema: {
       name: z.string().describe('Friendly name for the account'),
@@ -105,6 +108,8 @@ export function accountTools(
 
   // Update account tool — lets callers fix SMTP config (and other fields) on existing accounts
   server.registerTool('imap_update_account', {
+    title: 'Update account',
+    annotations: LOCAL_CONFIG,
     description: 'Update an existing IMAP account. Useful for fixing SMTP settings without removing and re-adding the account.',
     inputSchema: {
       accountId: z.string().describe('ID of the account to update'),
@@ -196,6 +201,8 @@ export function accountTools(
 
   // List accounts tool
   server.registerTool('imap_list_accounts', {
+    title: 'List accounts',
+    annotations: READ_ONLY,
     description: 'List all configured IMAP accounts. Each entry reports authType ("password" or "oauth2"); OAuth accounts also show their provider, tenant, and client ID. Tokens and passwords are never returned.',
     inputSchema: {}
   }, async () => {
@@ -227,6 +234,8 @@ export function accountTools(
   // ---------------------------------------------------------------------------
 
   server.registerTool('imap_add_oauth_account', {
+    title: 'Start OAuth sign-in',
+    annotations: NETWORK_AUTH,
     description: 'Start adding an Outlook.com / Hotmail / Live / Microsoft 365 mailbox using OAuth 2.0 (device-code flow). Microsoft no longer accepts passwords or app passwords for IMAP/SMTP, so use this instead of imap_add_account for those providers. Step 1 of 2: this returns a verificationUri and a short userCode — show BOTH to the user and ask them to open the URL in a browser, enter the code, and sign in. Then call imap_complete_oauth_login with the returned flowId (step 2); it waits for the sign-in and stores the account. Requires the Application (client) ID of an Entra app registration with "Allow public client flows" enabled and delegated Office 365 Exchange Online permissions IMAP.AccessAsUser.All and SMTP.Send (see README "Outlook.com / Microsoft 365 (OAuth 2.0)"). Pass accountId to re-authorize an existing account (e.g. after "refresh token was rejected").',
     inputSchema: {
       name: z.string().optional().describe('Friendly name for the account (e.g. "Personal Outlook"). Defaults to the email address. When accountId is given, supplying a name renames that account; omit it to keep the current name'),
@@ -306,6 +315,8 @@ export function accountTools(
   });
 
   server.registerTool('imap_complete_oauth_login', {
+    title: 'Complete OAuth sign-in',
+    annotations: NETWORK_AUTH,
     description: 'Step 2 of the OAuth 2.0 sign-in started by imap_add_oauth_account. Waits (up to ~25 seconds) for the user to finish signing in at the verification URL, then stores the account with its encrypted tokens and runs a connection test. Returns status "pending" if the user has not finished yet — call again with the same flowId until it returns "complete", "expired", "denied", or "error". Never returns tokens.',
     inputSchema: {
       flowId: z.string().describe('The flowId returned by imap_add_oauth_account'),
@@ -430,6 +441,8 @@ export function accountTools(
 
   // Remove account tool
   server.registerTool('imap_remove_account', {
+    title: 'Remove account',
+    annotations: DESTRUCTIVE,
     description: 'Remove an IMAP account configuration',
     inputSchema: {
       accountId: z.string().describe('ID of the account to remove'),
@@ -451,6 +464,8 @@ export function accountTools(
 
   // Connect to account tool
   server.registerTool('imap_connect', {
+    title: 'Connect to account',
+    annotations: CONNECTION,
     description: 'Connect to an IMAP account',
     inputSchema: {
       accountId: z.string().optional().describe('Account ID to connect to'),
@@ -487,6 +502,8 @@ export function accountTools(
 
   // Disconnect from account tool
   server.registerTool('imap_disconnect', {
+    title: 'Disconnect from account',
+    annotations: CONNECTION,
     description: 'Disconnect from an IMAP account',
     inputSchema: {
       accountId: z.string().describe('Account ID to disconnect from'),
@@ -507,6 +524,8 @@ export function accountTools(
 
   // Test account connection tool (without re-entering password)
   server.registerTool('imap_test_account', {
+    title: 'Test account connection',
+    annotations: CONNECTION,
     description: 'Test an existing account connection without re-entering credentials. Validates IMAP connectivity and returns folder count and message count.',
     inputSchema: {
       accountId: z.string().describe('Account ID to test'),

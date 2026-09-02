@@ -1,4 +1,5 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { CREATES, DESTRUCTIVE, MUTATING, READ_ONLY, READ_ONLY_LOCAL_OUTPUT, SENDS_MAIL } from './annotations.js';
 import { ImapService } from '../services/imap-service.js';
 import { AccountManager } from '../services/account-manager.js';
 import { SmtpService } from '../services/smtp-service.js';
@@ -286,6 +287,8 @@ export function emailTools(
 
   // Search emails tool
   server.registerTool('imap_search_emails', {
+    title: 'Search emails',
+    annotations: READ_ONLY,
     description: 'Note: on some servers a \'flagged\' or starred message carries a custom keyword (e.g. an Open-Xchange color label or Apple\'s $MailFlagBit*) instead of, or in addition to, the \\Flagged system flag. After any flagged search, inspect each result\'s customKeywords field before concluding a message is or isn\'t flagged — do not rely on the flagged filter alone. Search for emails matching criteria (sender, recipient, subject, body text, date range, read/flagged status). Use this to FIND messages when you know something about them but not their UID — e.g. "emails from amazon last week", "unread invoices". By default searches a single folder (INBOX). Set searchAllFolders=true to scan every mailbox at once — this catches messages filed away by rules (e.g. a receipt routed to a custom folder); Trash/Spam/Drafts are skipped unless you opt in. By default returns lightweight headers (uid, from, subject, date, and folder when searching across folders); set `includeBody=true` to also return the parsed body in one round-trip instead of paying the N+1 cost of calling imap_get_email per match. For the newest messages without criteria, prefer imap_get_latest_emails.',
     inputSchema: {
       ...accountSelector,
@@ -399,6 +402,8 @@ export function emailTools(
 
   // Get email content tool
   server.registerTool('imap_get_email', {
+    title: 'Read email',
+    annotations: READ_ONLY,
     description: 'Read the FULL content of a single email by its UID (body, sender/recipients, date, attachment list, optional raw headers and text-attachment previews). By default the body is returned as clean Markdown in markdownContent and raw HTML is omitted so it never crosses the boundary; set bodyFormat to "html" for the legacy raw htmlContent, or "text" for plain text only. Use after imap_search_emails or imap_get_latest_emails gives you a uid. Body text is truncated to maxContentLength to protect the context window — raise it for long messages. To fetch attachment bytes, use imap_download_attachment.',
     inputSchema: {
       ...accountSelector,
@@ -446,6 +451,8 @@ export function emailTools(
 
   // Upload file tool - writes a file to the server for use as an email attachment
   server.registerTool('imap_upload_file', {
+    title: 'Upload attachment file',
+    annotations: CREATES,
     description: `Upload a file to the server for use as an email attachment. Returns a path that can be used with imap_send_email attachments. This allows sending large attachments without hitting context window limits. Max size: ${MAX_UPLOAD_SIZE} bytes (configurable via IMAP_MAX_UPLOAD_SIZE). Uploads are auto-deleted after ${UPLOAD_TTL_MS} ms (configurable via IMAP_UPLOAD_TTL_MS).`,
     inputSchema: {
       filename: z.string().describe('Filename to save as'),
@@ -506,6 +513,8 @@ export function emailTools(
 
   // Download attachment tool
   server.registerTool('imap_download_attachment', {
+    title: 'Download attachment',
+    annotations: READ_ONLY_LOCAL_OUTPUT,
     description: 'Download a single attachment from an email (folder + uid + attachment filename/contentId, as listed by imap_get_email). Images are returned inline for viewing; PDFs are saved and their text is extracted inline (extractText); other files are saved to the shared downloads directory (or savePath). Use when the user wants the actual file contents, not just the message body.',
     inputSchema: {
       ...accountSelector,
@@ -611,6 +620,8 @@ export function emailTools(
 
   // Mark email as read tool
   server.registerTool('imap_mark_as_read', {
+    title: 'Mark as read',
+    annotations: MUTATING,
     description: 'Mark one or many emails as read. Accepts a single UID or an array — pass an array to flag N messages in one IMAP STORE round-trip (useful when triaging).',
     inputSchema: {
       ...accountSelector,
@@ -650,6 +661,8 @@ export function emailTools(
 
   // Mark email as unread tool
   server.registerTool('imap_mark_as_unread', {
+    title: 'Mark as unread',
+    annotations: MUTATING,
     description: 'Mark one or many emails as unread. Accepts a single UID or an array — pass an array to flag N messages in one IMAP STORE round-trip.',
     inputSchema: {
       ...accountSelector,
@@ -689,6 +702,8 @@ export function emailTools(
 
   // Flag email tool
   server.registerTool('imap_flag_email', {
+    title: 'Flag email',
+    annotations: MUTATING,
     description: 'Flag an email — sets the IMAP \\Flagged system flag (shows as a star in Gmail / a flag in Apple Mail). Use this tool when a user asks to star, flag, or mark a message as important.',
     inputSchema: {
       ...accountSelector,
@@ -712,6 +727,8 @@ export function emailTools(
 
   // Unflag email tool
   server.registerTool('imap_unflag_email', {
+    title: 'Unflag email',
+    annotations: MUTATING,
     description: 'Unflag an email — removes the IMAP \\Flagged system flag (the star in Gmail, the flag in Apple Mail). Note: some servers (e.g. Open-Xchange / Network Solutions) and Apple Mail also write a separate custom keyword such as $cl_N or $MailFlagBit* when a message is flagged in their client. Removing \\Flagged alone does not clear that keyword, so the message may still display as flagged. If it does, check the message\'s customKeywords via imap_get_email and remove the lingering label with imap_remove_keyword.',
     inputSchema: {
       ...accountSelector,
@@ -735,6 +752,8 @@ export function emailTools(
 
   // Add keyword tool
   server.registerTool('imap_add_keyword', {
+    title: 'Add keyword',
+    annotations: MUTATING,
     description: 'Set an arbitrary custom (non-system) IMAP keyword/label on an email — e.g. a provider color label like Open-Xchange\'s $cl_1..$cl_10, Apple Mail\'s $MailFlagBit0..$MailFlagBit2, or an app tag such as $promotion. Unlike imap_flag_email (which only ever sets the system \\Flagged flag), this passes the keyword through verbatim, but rejects backslash-prefixed system flags (e.g. \\Flagged, \\Seen, \\Deleted) — use the dedicated flag/read tools for those. Not every IMAP server permits custom keywords (see the mailbox\'s PERMANENTFLAGS) — if the server rejects or silently ignores the change, this call fails rather than reporting success.',
     inputSchema: {
       ...accountSelector,
@@ -763,6 +782,8 @@ export function emailTools(
 
   // Remove keyword tool
   server.registerTool('imap_remove_keyword', {
+    title: 'Remove keyword',
+    annotations: MUTATING,
     description: 'Remove an arbitrary custom (non-system) IMAP keyword/label from one message, a list of messages, or every message in a folder (allInFolder) — e.g. a provider color label like Open-Xchange\'s $cl_1..$cl_10, Apple Mail\'s $MailFlagBit0..$MailFlagBit2, or an app tag such as $promotion. Unlike imap_unflag_email (which only ever clears the system \\Flagged flag), this passes the keyword through verbatim, but rejects backslash-prefixed system flags (e.g. \\Flagged, \\Seen, \\Deleted) — use the dedicated flag/read tools for those. Not every IMAP server permits custom keywords (see the mailbox\'s PERMANENTFLAGS) — if the server rejects or silently ignores the change, this call fails rather than reporting success.',
     inputSchema: {
       ...accountSelector,
@@ -833,6 +854,8 @@ export function emailTools(
 
   // Delete email tool
   server.registerTool('imap_delete_email', {
+    title: 'Delete email',
+    annotations: DESTRUCTIVE,
     description: 'Delete ONE email by folder + uid (moves to Trash or expunges, server-dependent). Destructive and not easily undone — confirm the user means this specific message. To remove many at once use imap_bulk_delete (known uids) or imap_bulk_delete_by_search (by criteria, supports dryRun). To file an email away instead of deleting, use imap_move_email.',
     inputSchema: {
       ...accountSelector,
@@ -856,6 +879,8 @@ export function emailTools(
 
   // Move email to another folder
   server.registerTool('imap_move_email', {
+    title: 'Move email',
+    annotations: MUTATING,
     description: 'Move an email from one folder to another (e.g., INBOX to Taxes, or INBOX to Archive). Optionally creates the destination folder if it does not exist.',
     inputSchema: {
       ...accountSelector,
@@ -931,6 +956,8 @@ export function emailTools(
 
   // Bulk delete emails tool
   server.registerTool('imap_bulk_delete', {
+    title: 'Bulk delete emails',
+    annotations: DESTRUCTIVE,
     description: 'Delete multiple emails at once with chunking and auto-reconnection. Processes deletions in batches to prevent connection timeouts.',
     inputSchema: {
       ...accountSelector,
@@ -961,6 +988,8 @@ export function emailTools(
 
   // Bulk delete by search criteria tool
   server.registerTool('imap_bulk_delete_by_search', {
+    title: 'Bulk delete by search',
+    annotations: DESTRUCTIVE,
     description: 'Search for emails matching criteria and delete them all. Useful for cleaning up spam or unwanted emails. At least one concrete criterion (from, to, subject, before, or since) is REQUIRED — a call with no criteria is refused so it can never wipe an entire folder. Supports dryRun to preview matches first.',
     inputSchema: {
       ...accountSelector,
@@ -1061,6 +1090,8 @@ export function emailTools(
 
   // Get latest emails tool
   server.registerTool('imap_get_latest_emails', {
+    title: 'Get latest emails',
+    annotations: READ_ONLY,
     description: 'Get the most recent emails from a folder, newest first. Use this for "what just came in?" / "show my latest inbox messages" when no search filter is needed. By default returns lightweight headers (uid, from, subject, date); set `includeBody=true` to also return the parsed body in one round-trip instead of paying the N+1 cost of calling imap_get_email per message. To filter by sender/subject/date instead, use imap_search_emails.',
     inputSchema: {
       ...accountSelector,
@@ -1086,6 +1117,8 @@ export function emailTools(
 
   // Send email tool
   server.registerTool('imap_send_email', {
+    title: 'Send email',
+    annotations: SENDS_MAIL,
     description: 'Compose and send a NEW email via the account\'s SMTP server (a copy is saved to Sent unless disabled; account defaultBcc addresses are always BCC\'d when configured). Use for fresh outbound messages. To respond to an existing message use imap_reply_to_email (keeps threading); to pass a message on use imap_forward_email; to store without sending use imap_save_draft. Supports to/cc/bcc, text and/or HTML, and attachments by base64 content or by local file path (see imap_upload_file for large files; paths are confined to the upload directory or IMAP_ATTACHMENT_ROOTS). Set dryRun=true to validate attachments and compose the MIME without sending.',
     inputSchema: {
       ...accountSelector,
@@ -1158,6 +1191,8 @@ export function emailTools(
 
   // Save draft tool — composes a message and appends it to the Drafts folder with the \Draft flag
   server.registerTool('imap_save_draft', {
+    title: 'Save draft',
+    annotations: CREATES,
     description: 'Save an email as a draft in the Drafts folder (no send). Takes the same fields as imap_send_email (including account defaultBcc when configured).',
     inputSchema: {
       ...accountSelector,
@@ -1224,6 +1259,8 @@ export function emailTools(
 
   // Reply to email tool
   server.registerTool('imap_reply_to_email', {
+    title: 'Reply to email',
+    annotations: SENDS_MAIL,
     description: 'Reply to an existing email identified by folder + uid. Automatically sets the recipient to the original sender, prefixes the subject with "Re:", and preserves threading (In-Reply-To/References). Set replyAll to also include the original recipients. Use this instead of imap_send_email whenever the user is responding to a message already in a mailbox. Account defaultBcc addresses are always BCC\'d when configured.',
     inputSchema: {
       ...accountSelector,
@@ -1306,6 +1343,8 @@ export function emailTools(
 
   // Forward email tool
   server.registerTool('imap_forward_email', {
+    title: 'Forward email',
+    annotations: SENDS_MAIL,
     description: 'Forward an existing email (folder + uid) to new recipients, quoting the original message and headers. Optionally include the original attachments. Use when the user wants to pass an existing message on to someone else; use imap_reply_to_email instead to respond to the sender. Account defaultBcc addresses are always BCC\'d when configured.',
     inputSchema: {
       ...accountSelector,
@@ -1360,6 +1399,8 @@ export function emailTools(
 
   // Find thread messages tool
   server.registerTool('imap_find_thread_messages', {
+    title: 'Find thread messages',
+    annotations: READ_ONLY,
     description:
       'Find messages in `searchFolder` that belong to the same conversation threads as messages already in `sourceFolder`. ' +
       'Useful for catching replies that arrived after a thread was sorted. Works on any IMAP server (uses RFC 3501 HEADER search on In-Reply-To and References). ' +
@@ -1412,6 +1453,8 @@ export function emailTools(
   });
 
   server.registerTool('imap_find_email_by_message_id', {
+    title: 'Find email by Message-ID',
+    annotations: READ_ONLY,
     description:
       'Locate an email by its RFC822 Message-ID across folders and return its current { folder, uid } plus basic envelope. ' +
       'Robust to the message having been moved or archived (IMAP UIDs are folder-relative). ' +

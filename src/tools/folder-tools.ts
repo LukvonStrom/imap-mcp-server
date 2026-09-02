@@ -1,4 +1,5 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { DESTRUCTIVE, MUTATING, READ_ONLY } from './annotations.js';
 import { ImapService } from '../services/imap-service.js';
 import { AccountManager } from '../services/account-manager.js';
 import { isSystemFlag } from '../types/index.js';
@@ -18,6 +19,8 @@ export function folderTools(
 ): void {
   // List folders tool
   server.registerTool('imap_list_folders', {
+    title: 'List folders',
+    annotations: READ_ONLY,
     description: 'List all folders/mailboxes for an account (names, hierarchy delimiter, attributes, RFC 6154 special-use role). Use this first to discover exact folder names before searching, moving, or creating subfolders — folder naming varies by provider (e.g. "Archive" vs "[Gmail]/All Mail" vs "INBOX.Archive"). The specialUse field ("\\\\Sent", "\\\\Drafts", "\\\\Trash", "\\\\Junk", "\\\\Archive") identifies a folder\'s role independent of its localized name (e.g. "Gesendet" is the Sent folder when specialUse is "\\\\Sent").',
     inputSchema: {
       ...accountSelector,
@@ -46,6 +49,8 @@ export function folderTools(
 
   // Get folder status tool
   server.registerTool('imap_folder_status', {
+    title: 'Folder status',
+    annotations: READ_ONLY,
     description: 'Get status information about a folder',
     inputSchema: {
       ...accountSelector,
@@ -87,6 +92,8 @@ export function folderTools(
 
   // Create folder tool
   server.registerTool('imap_create_folder', {
+    title: 'Create folder',
+    annotations: MUTATING,
     description:
       'Create a new IMAP folder/mailbox. Most servers also create any missing parent folders ' +
       '(e.g. creating "Archives/2026/2026-05" auto-creates "Archives" and "Archives/2026"). ' +
@@ -129,6 +136,8 @@ export function folderTools(
 
   // Rename folder tool
   server.registerTool('imap_rename_folder', {
+    title: 'Rename folder',
+    annotations: MUTATING,
     description:
       'Rename or move a folder. Messages, flags and subfolders travel with it, and the server moves the mailbox rather than copying, so this is cheap no matter how much the folder holds. ' +
       'Also moves a folder within the hierarchy when the new path has a different parent (e.g. "Projekt" to "Archiv/Projekt"). ' +
@@ -170,6 +179,8 @@ export function folderTools(
 
   // Delete folder tool
   server.registerTool('imap_delete_folder', {
+    title: 'Delete folder',
+    annotations: DESTRUCTIVE,
     description:
       'Delete a folder. Destructive and not undoable: deleting a mailbox deletes the messages in it. ' +
       'Guarded by default — a folder that still holds messages, or that carries a special-use role (Sent, Drafts, Trash, Junk, Archive), is refused and the response says why. Set force to override that; INBOX is refused regardless. ' +
@@ -212,6 +223,8 @@ export function folderTools(
 
   // Get unread count tool
   server.registerTool('imap_get_unread_count', {
+    title: 'Get unread count',
+    annotations: READ_ONLY,
     description: 'Count unread (unseen) emails per folder, plus a total. Use for "how many unread do I have?" overviews. Defaults to all folders; pass a folders list to limit scope and speed it up.',
     inputSchema: {
       ...accountSelector,

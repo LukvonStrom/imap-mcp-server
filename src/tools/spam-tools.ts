@@ -1,4 +1,5 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { DESTRUCTIVE, LOCAL_CONFIG, READ_ONLY } from './annotations.js';
 import { ImapService } from '../services/imap-service.js';
 import { SpamService, HeaderRedFlag } from '../services/spam-service.js';
 import { z } from 'zod';
@@ -10,6 +11,8 @@ export function spamTools(
 ): void {
   // Check emails for spam
   server.registerTool('imap_check_spam', {
+    title: 'Check for spam',
+    annotations: READ_ONLY,
     description: 'Check emails in a folder for spam. Combines sender-domain checks (known spam/disposable domains, suspicious patterns) with deterministic raw-header analysis: bulk-mailer X-Mailer/User-Agent signatures, Precedence: bulk, DMARC/SPF/DKIM failures in Authentication-Results, and List-Unsubscribe / Reply-To domains that do not match the sender. Header checks catch scam mail from fresh, unlisted domains that pass the domain check. Returns domain-based spam, a separate list of header-flagged mails, and domain statistics.',
     inputSchema: {
       accountId: z.string().describe('Account ID'),
@@ -90,6 +93,8 @@ export function spamTools(
 
   // Delete spam emails
   server.registerTool('imap_delete_spam', {
+    title: 'Delete spam',
+    annotations: DESTRUCTIVE,
     description: 'Find and delete emails from known spam/disposable email domains.',
     inputSchema: {
       accountId: z.string().describe('Account ID'),
@@ -178,6 +183,8 @@ export function spamTools(
 
   // Get domain statistics
   server.registerTool('imap_domain_stats', {
+    title: 'Sender domain statistics',
+    annotations: READ_ONLY,
     description: 'Get statistics about sender domains in a folder. Useful for identifying bulk senders or spam patterns.',
     inputSchema: {
       accountId: z.string().describe('Account ID'),
@@ -224,6 +231,8 @@ export function spamTools(
 
   // Add custom spam domain
   server.registerTool('imap_add_spam_domain', {
+    title: 'Add spam domain',
+    annotations: LOCAL_CONFIG,
     description: 'Add a domain to the custom spam list. Emails from this domain will be flagged as spam.',
     inputSchema: {
       domain: z.string().describe('Domain to add to spam list (e.g., "spammer.com")'),
@@ -244,6 +253,8 @@ export function spamTools(
 
   // Remove custom spam domain
   server.registerTool('imap_remove_spam_domain', {
+    title: 'Remove spam domain',
+    annotations: LOCAL_CONFIG,
     description: 'Remove a domain from the custom spam list.',
     inputSchema: {
       domain: z.string().describe('Domain to remove from spam list'),
@@ -264,6 +275,8 @@ export function spamTools(
 
   // Add whitelist domain
   server.registerTool('imap_add_whitelist_domain', {
+    title: 'Add whitelist domain',
+    annotations: LOCAL_CONFIG,
     description: 'Add a domain to the whitelist. Emails from whitelisted domains will never be flagged as spam.',
     inputSchema: {
       domain: z.string().describe('Domain to whitelist (e.g., "trusted.com")'),
@@ -284,6 +297,8 @@ export function spamTools(
 
   // List known spam domains
   server.registerTool('imap_list_spam_domains', {
+    title: 'List spam domains',
+    annotations: READ_ONLY,
     description: 'List all known spam domains (built-in and custom).',
     inputSchema: {}
   }, async () => {
@@ -306,6 +321,8 @@ export function spamTools(
 
   // Delete emails by domain
   server.registerTool('imap_delete_by_domain', {
+    title: 'Delete emails by domain',
+    annotations: DESTRUCTIVE,
     description: 'Delete all emails from a specific domain. Useful for cleaning up unwanted newsletters or spam.',
     inputSchema: {
       accountId: z.string().describe('Account ID'),
