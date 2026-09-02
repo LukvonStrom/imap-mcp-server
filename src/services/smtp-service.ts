@@ -3,31 +3,66 @@ import MailComposer from 'nodemailer/lib/mail-composer/index.js';
 import { ImapAccount, EmailComposer, SmtpConfig } from '../types/index.js';
 import { parseSerializedArray } from '../utils/array-input.js';
 import { assertCredentialsResolved } from '../utils/env-credentials.js';
+import { MicrosoftOAuthService } from './oauth-service.js';
 
 export class SmtpService {
   private transporters: Map<string, nodemailer.Transporter> = new Map();
+  /** Access token each cached OAuth transporter was built with, so a refreshed token rebuilds it. */
+  private transporterTokens: Map<string, string> = new Map();
+  private oauthService?: MicrosoftOAuthService;
+
+  /** Share one OAuth service (and its token cache) with the IMAP side and the tools. */
+  setOAuthService(oauthService: MicrosoftOAuthService): void {
+    this.oauthService = oauthService;
+  }
+
+  private getOAuthService(): MicrosoftOAuthService {
+    if (!this.oauthService) {
+      this.oauthService = new MicrosoftOAuthService();
+    }
+    return this.oauthService;
+  }
 
   async createTransporter(account: ImapAccount): Promise<nodemailer.Transporter> {
-    if (this.transporters.has(account.id)) {
-      return this.transporters.get(account.id)!;
-    }
-
     // See ImapService.connect: name the missing variable instead of letting the
     // provider reject a blank credential with a generic auth error.
     assertCredentialsResolved(account, 'smtp');
 
+    // OAuth access tokens are short-lived (about an hour). A cached transporter
+    // keeps the token it was created with, so once the OAuth service hands out
+    // a newer one the transporter has to be rebuilt.
+    const accessToken = account.authType === 'oauth2'
+      ? await this.getOAuthService().getValidAccessToken(account)
+      : undefined;
+
+    const cached = this.transporters.get(account.id);
+    if (cached) {
+      if (accessToken === undefined || this.transporterTokens.get(account.id) === accessToken) {
+        return cached;
+      }
+      this.disconnect(account.id);
+    }
+
     const smtpConfig = account.smtp || this.getDefaultSmtpConfig(account);
     const { secure, requireTLS } = this.resolveTlsMode(smtpConfig.port, smtpConfig.secure);
+
+    const auth = accessToken !== undefined
+      ? {
+          type: 'OAuth2' as const,
+          user: smtpConfig.user || account.user,
+          accessToken,
+        }
+      : {
+          user: smtpConfig.user || account.user,
+          pass: smtpConfig.password || account.password,
+        };
 
     const transporterOptions = {
       host: smtpConfig.host,
       port: smtpConfig.port,
       secure,
       requireTLS,
-      auth: {
-        user: smtpConfig.user || account.user,
-        pass: smtpConfig.password || account.password,
-      },
+      auth,
       tls: smtpConfig.tls,
     };
 
@@ -37,6 +72,9 @@ export class SmtpService {
     await transporter.verify();
     
     this.transporters.set(account.id, transporter);
+    if (accessToken !== undefined) {
+      this.transporterTokens.set(account.id, accessToken);
+    }
     return transporter;
   }
 
@@ -191,6 +229,7 @@ export class SmtpService {
       transporter.close();
       this.transporters.delete(accountId);
     }
+    this.transporterTokens.delete(accountId);
   }
 
   disconnectAll(): void {
@@ -198,5 +237,6 @@ export class SmtpService {
       transporter.close();
     }
     this.transporters.clear();
+    this.transporterTokens.clear();
   }
 }
