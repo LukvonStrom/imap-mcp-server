@@ -1,5 +1,4 @@
 import express from 'express';
-import cors from 'cors';
 import bodyParser from 'body-parser';
 import path from 'path';
 import fs from 'fs';
@@ -81,7 +80,8 @@ export class WebUIServer {
     // stripAccountSecrets this closes the "any open page can read/modify the
     // local accounts API" vector.
     this.app.use(this.loopbackOnly());
-    this.app.use(cors());
+    // No CORS middleware on purpose: the wizard is same-origin only. A wildcard
+    // Access-Control-Allow-Origin would only ever widen what loopbackOnly allows.
     this.app.use(bodyParser.json());
     this.app.use(express.static(this.resolvePublicDir()));
   }

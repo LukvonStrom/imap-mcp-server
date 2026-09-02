@@ -30,6 +30,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `READ_ONLY_TOOLS` (`IMAP_MCP_READ_ONLY`). Tool names, descriptions, inputs, and
   outputs are unchanged.
 
+### Security (hostile audit, 2026-09-03)
+- `imap_download_attachment.savePath` is confined to the download directory /
+  `IMAP_ATTACHMENT_ROOTS`, never follows a symlinked parent outside them, and
+  never overwrites an existing file (was: arbitrary file write, reachable in
+  read-only mode).
+- `imap_update_account` requires the password to be re-supplied when host, port,
+  user or TLS/SMTP connection settings change; OAuth accounts are pinned to
+  Microsoft hosts with validated TLS (was: stored credential redirectable to an
+  attacker host).
+- Account names must be unique (env credential overrides are keyed by name).
+- Unparseable dates in search / bulk-delete criteria are rejected instead of
+  silently dropped.
+- Wizard no longer sends a wildcard `Access-Control-Allow-Origin`; `cors`
+  dependency removed.
+
 ### Changed
 - Path-sourced attachments are confined to the download/upload directory or
   `IMAP_ATTACHMENT_ROOTS`; URLs are rejected. Omitted `contentType` is detected

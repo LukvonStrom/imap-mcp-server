@@ -40,6 +40,32 @@ function publicOAuth(oauth: OAuthConfig | undefined) {
   return { provider: oauth.provider, tenant: oauth.tenant, clientId: oauth.clientId, scopes: oauth.scopes };
 }
 
+
+/**
+ * Hosts an OAuth (XOAUTH2) account may talk to. The access token is a bearer
+ * credential for Microsoft's mail resource; pointing the account at any other
+ * host would hand that token to whoever runs it. Suffix match, case-insensitive.
+ */
+const MICROSOFT_MAIL_HOST_SUFFIXES = ['.office365.com', '.office.com', '.outlook.com', '.live.com', '.hotmail.com'];
+
+export function isMicrosoftMailHost(host: string): boolean {
+  const h = host.trim().toLowerCase();
+  return MICROSOFT_MAIL_HOST_SUFFIXES.some(suffix => h.endsWith(suffix));
+}
+
+function assertMicrosoftMailHost(kind: 'IMAP' | 'SMTP', host: string): void {
+  if (!isMicrosoftMailHost(host)) {
+    throw new Error(`${kind} host "${host}" is not a Microsoft mail endpoint (expected *.office365.com, *.office.com, *.outlook.com, *.live.com or *.hotmail.com). OAuth tokens are only ever sent to Microsoft hosts.`);
+  }
+}
+
+function assertUniqueAccountName(accountManager: AccountManager, name: string, exceptId?: string): void {
+  const clash = accountManager.getAllAccounts().find(acc => acc.name === name && acc.id !== exceptId);
+  if (clash) {
+    throw new Error(`An account named "${name}" already exists (id ${clash.id}). Account names must be unique — environment credential overrides are keyed by name, so a duplicate could receive the existing account's credentials. Use imap_update_account to change it, or pick another name.`);
+  }
+}
+
 export function accountTools(
   server: McpServer,
   accountManager: AccountManager,
@@ -69,6 +95,7 @@ export function accountTools(
       defaultBcc: z.union([z.string(), z.array(z.string())]).optional().describe('Optional BCC address(es) applied automatically to every outbound send, reply, forward, and draft for this account. Merged with any per-call bcc'),
     }
   }, async ({ name, host, port, user, password, tls, allowStartTLS, tlsRejectUnauthorized, email, smtpHost, smtpPort, smtpSecure, sentFolder, defaultBcc }) => {
+    assertUniqueAccountName(accountManager, name);
     const smtp = (smtpHost || smtpPort !== undefined || smtpSecure !== undefined)
       ? {
           host: smtpHost || host,
@@ -110,7 +137,7 @@ export function accountTools(
   server.registerTool('imap_update_account', {
     title: 'Update account',
     annotations: LOCAL_CONFIG,
-    description: 'Update an existing IMAP account. Useful for fixing SMTP settings without removing and re-adding the account.',
+    description: 'Update an existing IMAP account. Useful for fixing SMTP settings without removing and re-adding the account. SECURITY: changing host, port, user or any TLS/SMTP connection setting requires the account password to be passed again in the same call (the model cannot read it back), so a stored credential can never be redirected to another server without the user; OAuth accounts may only point at Microsoft hosts.',
     inputSchema: {
       accountId: z.string().describe('ID of the account to update'),
       name: z.string().optional().describe('New friendly name'),
@@ -144,6 +171,30 @@ export function accountTools(
         `accountId "${accountId}" and finish with imap_complete_oauth_login.`
       );
     }
+
+    // A prompt-injected "fix the server settings" must not be able to redirect
+    // the stored password (or OAuth bearer token) to an attacker's host. Any
+    // change to where or how we connect therefore requires the credential to
+    // be re-supplied by the caller — which the model cannot do on its own, the
+    // password is never returned by any tool — or, for OAuth accounts, keeps
+    // the host inside Microsoft's domains where the token is valid anyway.
+    const connectionTouched = [host, port, user, tls, allowStartTLS, tlsRejectUnauthorized, smtpHost, smtpPort, smtpSecure, smtpUser]
+      .some(v => v !== undefined);
+    if (connectionTouched) {
+      if (existing.authType === 'oauth2') {
+        if (host !== undefined) assertMicrosoftMailHost('IMAP', host);
+        if (smtpHost !== undefined) assertMicrosoftMailHost('SMTP', smtpHost);
+        if (tls === false || allowStartTLS === false || tlsRejectUnauthorized === false) {
+          throw new Error('OAuth 2.0 accounts always use validated TLS; tls, allowStartTLS and tlsRejectUnauthorized cannot be disabled for them.');
+        }
+      } else if (password === undefined) {
+        throw new Error(
+          'Changing host, port, user, TLS or SMTP connection settings requires re-entering the account password in the same call (password, and smtpPassword if SMTP uses its own). ' +
+          'This prevents a stored credential from being sent to a different server without the user\'s explicit involvement. Ask the user for the password, then retry.'
+        );
+      }
+    }
+    if (name !== undefined) assertUniqueAccountName(accountManager, name, accountId);
 
     const updates: any = {};
     if (name !== undefined) updates.name = name;
@@ -272,13 +323,20 @@ export function accountTools(
       throw new Error(`Invalid tenant "${resolvedTenant}". Use consumers, common, organizations, a tenant GUID, or a verified domain.`);
     }
 
+    const pendingHost = host ?? existing?.host ?? outlook?.imapHost ?? 'outlook.office365.com';
+    const pendingSmtpHost = smtpHost ?? existing?.smtp?.host ?? outlook?.smtpHost ?? 'smtp-mail.outlook.com';
+    assertMicrosoftMailHost('IMAP', pendingHost);
+    assertMicrosoftMailHost('SMTP', pendingSmtpHost);
+    const pendingName = name || existing?.name || email;
+    assertUniqueAccountName(accountManager, pendingName, accountId);
+
     const pending: PendingOAuthAccount = {
       accountId,
-      name: name || existing?.name || email,
+      name: pendingName,
       email,
-      host: host ?? existing?.host ?? outlook?.imapHost ?? 'outlook.office365.com',
+      host: pendingHost,
       port: port ?? existing?.port ?? outlook?.imapPort ?? 993,
-      smtpHost: smtpHost ?? existing?.smtp?.host ?? outlook?.smtpHost ?? 'smtp-mail.outlook.com',
+      smtpHost: pendingSmtpHost,
       smtpPort: smtpPort ?? existing?.smtp?.port ?? outlook?.smtpPort ?? 587,
       clientId: resolvedClientId,
       tenant: resolvedTenant,

@@ -48,6 +48,7 @@ const mockSmtpService = {};
 describe('imap_download_attachment PDF text extraction (pdf-parse v2)', () => {
   // Keep writes inside the temp dir so the test has no side effects on the real downloads folder.
   const savePath = join(tmpdir(), `imap-pdf-extract-${process.pid}.pdf`);
+  process.env.IMAP_ATTACHMENT_ROOTS = tmpdir();
 
   beforeEach(() => {
     vi.clearAllMocks();

@@ -8,7 +8,7 @@ import { parseSerializedArray } from '../utils/array-input.js';
 import { mergeBcc } from '../utils/default-bcc.js';
 import type { EmailAttachment, EmailMessage, ImapAccount, SentSaveResult } from '../types/index.js';
 import { z } from 'zod';
-import { basename, join, delimiter as pathDelimiter, resolve as resolvePath, sep } from 'path';
+import { basename, dirname, join, delimiter as pathDelimiter, resolve as resolvePath, sep } from 'path';
 import { homedir } from 'os';
 import { randomBytes } from 'crypto';
 import { constants as fsConstants } from 'fs';
@@ -110,6 +110,45 @@ function decodeStrictBase64(value: string, index: number): Buffer {
     throw new Error(`Invalid attachment at index ${index}: content is not valid base64`);
   }
   return Buffer.from(normalized, 'base64');
+}
+
+
+/**
+ * Resolve where imap_download_attachment may write. The attachment bytes are
+ * sender-controlled and the path is model-controlled, so an unconfined path
+ * would let a prompt-injected email write ~/.zshrc or a LaunchAgent. Explicit
+ * paths must resolve (after realpath of the parent) under the download dir or
+ * IMAP_ATTACHMENT_ROOTS, may not replace an existing file, and may not be a
+ * symlink. The default location is DOWNLOAD_DIR/<basename of the MIME name>.
+ */
+async function resolveDownloadTarget(savePath: string | undefined, mimeFilename: string): Promise<string> {
+  const { mkdir, lstat } = await import('fs/promises');
+  if (!savePath || !savePath.trim()) {
+    await mkdir(DOWNLOAD_DIR, { recursive: true });
+    return join(DOWNLOAD_DIR, basename(mimeFilename) || 'attachment');
+  }
+  const wanted = resolvePath(savePath.trim());
+  const parent = dirname(wanted);
+  const roots = attachmentRoots();
+  // Only create the parent when it already sits under an allowed root — never
+  // mkdir -p an attacker-chosen tree elsewhere.
+  if (!roots.some(root => parent === root || parent.startsWith(root + sep))) {
+    throw new Error(`Refusing to save outside the allowed download directories (${roots.join(', ')}). Omit savePath to use the download directory, or add the target directory to IMAP_ATTACHMENT_ROOTS.`);
+  }
+  await mkdir(parent, { recursive: true });
+  const parentReal = await realpath(parent);
+  const withinReal = await Promise.all(roots.map(async r => { try { return await realpath(r); } catch { return r; } }));
+  if (!withinReal.some(root => parentReal === root || parentReal.startsWith(root + sep))) {
+    throw new Error('Refusing to save: the target directory resolves (via symlink) outside the allowed download directories.');
+  }
+  const target = join(parentReal, basename(wanted));
+  try {
+    await lstat(target);
+    throw new Error(`Refusing to overwrite existing file ${target}. Choose a different savePath.`);
+  } catch (err: any) {
+    if (err?.code !== 'ENOENT') throw err;
+  }
+  return target;
 }
 
 export async function normalizeAttachments(atts?: AttachmentInput[]): Promise<NormalizedAttachments> {
@@ -276,13 +315,18 @@ export function emailTools(
   accountManager: AccountManager,
   smtpService: SmtpService
 ): void {
+  // Strict: an unparseable date must fail loudly. imapflow silently drops an
+  // Invalid Date search term, so "before: garbage" would otherwise widen a
+  // search — or a bulk delete — to every message matching the other criteria.
   const parseDateOnly = (value: string): Date => {
     const parts = value.split('-').map(Number);
-    if (parts.length !== 3 || parts.some(Number.isNaN)) {
-      return new Date(value);
+    const parsed = parts.length === 3 && !parts.some(Number.isNaN)
+      ? new Date(parts[0], parts[1] - 1, parts[2])
+      : new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+      throw new Error(`Invalid date "${value}" — use YYYY-MM-DD.`);
     }
-    const [year, month, day] = parts;
-    return new Date(year, month - 1, day);
+    return parsed;
   };
 
   // Search emails tool
@@ -521,7 +565,7 @@ export function emailTools(
       folder: z.string().default('INBOX').describe('Folder name'),
       uid: z.coerce.number().describe('Email UID'),
       filename: z.string().describe('Attachment filename or contentId'),
-      savePath: z.string().optional().describe('Optional file path to save the attachment to. If not provided, files are saved to the shared downloads directory.'),
+      savePath: z.string().optional().describe('Optional explicit file path. Must lie under the download directory (IMAP_DOWNLOAD_DIR or ~/Downloads/imap-attachments) or a directory listed in IMAP_ATTACHMENT_ROOTS, and must not already exist — anything else is refused so a message can never write files elsewhere on disk. Usually omit it: the file is then saved as <download dir>/<attachment name>.'),
       extractText: z.boolean().default(true).describe('For PDFs, extract and return text content inline'),
     }
   }, async ({ accountId: rawAccountId, accountName, folder, uid, filename, savePath, extractText }) => {
@@ -563,16 +607,10 @@ export function emailTools(
           await pdfParser.destroy();
         }
 
-        // Also save the file for binary access
+        // Also save the file for binary access (confined — see resolveDownloadTarget).
         const fs = await import('fs');
-        const path = await import('path');
-        const downloadDir = savePath ? path.dirname(savePath) : DOWNLOAD_DIR;
-        fs.mkdirSync(downloadDir, { recursive: true });
-        // resolvedFilename comes from the (sender-controlled) MIME headers, so it
-        // may contain path-traversal segments like "../../". Confine the default
-        // save to DOWNLOAD_DIR via basename; an explicit savePath is caller-chosen.
-        const targetPath = savePath || path.join(DOWNLOAD_DIR, path.basename(resolvedFilename));
-        fs.writeFileSync(targetPath, content);
+        const targetPath = await resolveDownloadTarget(savePath, resolvedFilename);
+        fs.writeFileSync(targetPath, content, { flag: savePath ? 'wx' : 'w' });
 
         return {
           content: [{
@@ -594,15 +632,12 @@ export function emailTools(
       }
     }
 
-    // Save to shared downloads directory
+    // Save to the download directory (confined — see resolveDownloadTarget).
+    // The default location may be overwritten (same attachment re-downloaded);
+    // an explicit savePath never replaces an existing file.
     const fs = await import('fs');
-    const path = await import('path');
-    const downloadDir = savePath ? path.dirname(savePath) : DOWNLOAD_DIR;
-    fs.mkdirSync(downloadDir, { recursive: true });
-    // Confine the default save to DOWNLOAD_DIR: resolvedFilename is sender-
-    // controlled and may contain "../" traversal (savePath is caller-chosen).
-    const targetPath = savePath || path.join(DOWNLOAD_DIR, path.basename(resolvedFilename));
-    fs.writeFileSync(targetPath, content);
+    const targetPath = await resolveDownloadTarget(savePath, resolvedFilename);
+    fs.writeFileSync(targetPath, content, { flag: savePath ? 'wx' : 'w' });
 
     return {
       content: [{

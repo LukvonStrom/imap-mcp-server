@@ -457,7 +457,7 @@ Once configured, the IMAP MCP server provides the following tools in Claude:
       any per-call `bcc` (duplicates removed case-insensitively)
   ```
 
-- **imap_update_account**: Update an existing account (fix SMTP settings, rename, etc.)
+- **imap_update_account**: Update an existing account (fix SMTP settings, rename, etc.). **Security:** changing `host`, `port`, `user` or any TLS/SMTP connection setting requires passing `password` (and `smtpPassword` where SMTP has its own) in the same call — the assistant cannot read the stored password back, so a prompt-injected "fix your server settings" can never redirect the credential to another server. OAuth accounts may only point at Microsoft hosts and cannot disable TLS validation. Account names must be unique.
   ```
   Parameters:
   - accountId: ID of the account to update
@@ -666,7 +666,11 @@ Once configured, the IMAP MCP server provides the following tools in Claude:
   - folder: Folder name (default: INBOX)
   - uid: Email UID
   - filename: Attachment filename or contentId
-  - savePath: Optional file path to save the attachment to
+  - savePath: Optional explicit path. Must lie under the download directory
+      (`IMAP_DOWNLOAD_DIR` or `~/Downloads/imap-attachments`) or a directory in
+      `IMAP_ATTACHMENT_ROOTS`, and must not already exist; anything else is
+      refused so a malicious email can never make the assistant write files
+      elsewhere on disk. Usually omit it.
   - extractText: For PDFs, extract and return text content inline (default: true)
   ```
 

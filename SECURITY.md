@@ -30,6 +30,17 @@ control**.
   Review that client's own privacy terms; treat any connected model as a party
   that can read the mailboxes you expose.
 
+- **Prompt-injection containment.** Email content is untrusted input to the
+  connected model, so the tools limit what a hijacked assistant can do:
+  attachments can only be *sent* from, and *saved* to, the download directory
+  (or `IMAP_ATTACHMENT_ROOTS`); an explicit save path never overwrites an
+  existing file; changing an account's host/port/TLS/SMTP settings requires the
+  password to be re-supplied in the same call (OAuth accounts are pinned to
+  Microsoft hosts); account names are unique so environment credential
+  overrides cannot be captured by a look-alike account; bulk deletes need
+  concrete, valid criteria; every tool carries MCP annotations so clients can
+  require confirmation for destructive ones.
+
 ## Recommendations for users
 
 - Use **app-specific passwords** where your provider supports them (Gmail,

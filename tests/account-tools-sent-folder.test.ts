@@ -17,6 +17,7 @@ const mockServer = {
 
 const mockAccountManager = {
   addAccount: vi.fn(async (acc: any) => ({ ...acc, id: 'acc1' })),
+  getAllAccounts: vi.fn(() => []),
   getAccount: vi.fn(() => ({ id: 'acc1', name: 'Test', host: 'imap.example.com' })),
   updateAccount: vi.fn(async (id: string, updates: any) => ({ id, name: 'Test', ...updates })),
 };
