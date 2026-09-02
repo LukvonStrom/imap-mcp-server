@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cleartext/insecure options (`allowStartTLS: false`, `tlsRejectUnauthorized: false`)
   carry explicit warnings in their tool descriptions.
 
-## [Unreleased]
+### Microsoft OAuth 2.0 (also unreleased)
 
 ### Added
 - **OAuth 2.0 (XOAUTH2) for Outlook.com / Hotmail / Live and Microsoft 365.** Microsoft has disabled basic authentication for IMAP/SMTP — passwords and app passwords are both refused — so those mailboxes could not be used at all. Two new tools run the Entra **device-code flow**: `imap_add_oauth_account` starts it and returns a `verificationUri` + `userCode` for the user, `imap_complete_oauth_login` waits for the sign-in (≤ 25 s per call, `pending` in between), stores the account with `authType: "oauth2"`, and runs a connection test. The Entra *Application (client) ID* comes from the `clientId` argument or the `IMAP_MCP_MS_CLIENT_ID` environment variable; `tenant` defaults to `consumers` (personal accounts) and accepts `organizations` / `common` / a tenant GUID or domain for Microsoft 365. Passing `accountId` re-authorizes an existing account in place.
