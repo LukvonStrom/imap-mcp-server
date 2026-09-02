@@ -3,8 +3,15 @@ import { readFileSync, writeFileSync, mkdirSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
-import { ImapAccount } from '../types/index.js';
+import { ImapAccount, OAuthConfig } from '../types/index.js';
 import { ENV_CREDENTIAL_SUFFIXES, envVarName } from '../utils/env-credentials.js';
+
+/** Token fields an OAuth refresh may rotate; see `AccountManager.updateOAuthTokens`. */
+export interface OAuthTokenUpdate {
+  refreshToken?: string;
+  accessToken?: string;
+  accessTokenExpiresAt?: number;
+}
 
 export class AccountManager {
   private configPath: string;
@@ -13,7 +20,7 @@ export class AccountManager {
   private capturedEnvOverrides: Map<string, string> = new Map();
 
   private static readonly ENV_OVERRIDE_PATTERN =
-    /^IMAP_MCP_ACCOUNT_.+_(?:IMAP|SMTP)_(?:USERNAME|PASSWORD)$/;
+    /^IMAP_MCP_ACCOUNT_.+_(?:(?:IMAP|SMTP)_(?:USERNAME|PASSWORD)|OAUTH_REFRESH_TOKEN)$/;
 
   constructor() {
     this.configPath = path.join(os.homedir(), '.imap-mcp', 'accounts.json');
@@ -38,10 +45,15 @@ export class AccountManager {
       };
     }
 
+    // OAuth tokens are credentials too — same treatment as the password.
+    if (account.oauth) {
+      newAccount.oauth = this.encryptOAuth(account.oauth);
+    }
+
     this.accounts.set(id, newAccount);
     await this.saveAccounts();
     
-    return { ...newAccount, password: account.password, smtp: account.smtp };
+    return { ...newAccount, password: account.password, smtp: account.smtp, oauth: account.oauth };
   }
 
 
@@ -76,6 +88,11 @@ export class AccountManager {
       };
     }
 
+    // Encrypt OAuth tokens if the oauth block is being replaced
+    if (processedUpdates.oauth) {
+      processedUpdates.oauth = this.encryptOAuth(processedUpdates.oauth);
+    }
+
     // Merge updates with existing account
     const updatedAccount: ImapAccount = {
       ...existingAccount,
@@ -87,19 +104,36 @@ export class AccountManager {
     await this.saveAccounts();
 
     // Return decrypted version
-    const decrypted: ImapAccount = {
-      ...updatedAccount,
-      password: this.decrypt(updatedAccount.password),
-    };
-    
-    if (updatedAccount.smtp?.password) {
-      decrypted.smtp = {
-        ...updatedAccount.smtp,
-        password: this.decrypt(updatedAccount.smtp.password),
-      };
+    return this.decryptAccount(updatedAccount);
+  }
+
+  /**
+   * Persist rotated OAuth tokens after a refresh. Only the supplied fields are
+   * touched; everything else on the account (including the rest of `oauth`)
+   * stays as stored. Tokens are encrypted like the password. Never logs them.
+   */
+  async updateOAuthTokens(id: string, tokens: OAuthTokenUpdate): Promise<void> {
+    const existing = this.accounts.get(id);
+    if (!existing) {
+      throw new Error(`Account with id ${id} not found`);
     }
-    
-    return decrypted;
+    if (!existing.oauth) {
+      throw new Error(`Account ${id} is not an OAuth account`);
+    }
+
+    const oauth: OAuthConfig = { ...existing.oauth };
+    if (tokens.refreshToken !== undefined) {
+      oauth.refreshToken = this.encrypt(tokens.refreshToken);
+    }
+    if (tokens.accessToken !== undefined) {
+      oauth.accessToken = this.encrypt(tokens.accessToken);
+    }
+    if (tokens.accessTokenExpiresAt !== undefined) {
+      oauth.accessTokenExpiresAt = tokens.accessTokenExpiresAt;
+    }
+
+    this.accounts.set(id, { ...existing, oauth });
+    await this.saveAccounts();
   }
 
   getAccount(id: string): ImapAccount | undefined {
@@ -107,6 +141,26 @@ export class AccountManager {
     const account = this.accounts.get(id);
     if (!account) return undefined;
 
+    return this.applyEnvOverrides(this.decryptAccount(account));
+  }
+
+  /** Encrypt the token fields of an OAuth block for storage. */
+  private encryptOAuth(oauth: OAuthConfig): OAuthConfig {
+    const encrypted: OAuthConfig = {
+      ...oauth,
+      refreshToken: this.encrypt(oauth.refreshToken ?? ''),
+    };
+    if (oauth.accessToken !== undefined) {
+      encrypted.accessToken = this.encrypt(oauth.accessToken);
+    }
+    return encrypted;
+  }
+
+  /**
+   * Return a copy of a stored account with every credential field decrypted:
+   * `password`, `smtp.password`, and the OAuth `refreshToken` / `accessToken`.
+   */
+  private decryptAccount(account: ImapAccount): ImapAccount {
     const decrypted: ImapAccount = {
       ...account,
       password: this.decryptField(account.password),
@@ -119,7 +173,17 @@ export class AccountManager {
       };
     }
 
-    return this.applyEnvOverrides(decrypted);
+    if (account.oauth) {
+      decrypted.oauth = {
+        ...account.oauth,
+        refreshToken: this.decryptField(account.oauth.refreshToken),
+        ...(account.oauth.accessToken !== undefined
+          ? { accessToken: this.decryptField(account.oauth.accessToken) }
+          : {}),
+      };
+    }
+
+    return decrypted;
   }
 
   /**
@@ -131,6 +195,7 @@ export class AccountManager {
    *   IMAP_MCP_ACCOUNT_<NAME>_IMAP_PASSWORD  -> password
    *   IMAP_MCP_ACCOUNT_<NAME>_SMTP_USERNAME  -> smtp.user  (only if smtp exists)
    *   IMAP_MCP_ACCOUNT_<NAME>_SMTP_PASSWORD  -> smtp.password (only if smtp exists)
+   *   IMAP_MCP_ACCOUNT_<NAME>_OAUTH_REFRESH_TOKEN -> oauth.refreshToken (only if oauth exists)
    *
    * <NAME> is the account name uppercased with every non-alphanumeric character
    * replaced by "_". Overrides are applied in-memory only; nothing is written
@@ -169,11 +234,19 @@ export class AccountManager {
       }
     }
 
+    if (result.oauth) {
+      const refreshToken = this.getEnvOverride(varName(ENV_CREDENTIAL_SUFFIXES.oauthRefreshToken));
+      if (refreshToken !== undefined) {
+        result.oauth = { ...result.oauth, refreshToken };
+      }
+    }
+
     return result;
   }
 
   /**
-   * Capture every `IMAP_MCP_ACCOUNT_*_(IMAP|SMTP)_(USERNAME|PASSWORD)` variable
+   * Capture every `IMAP_MCP_ACCOUNT_*_(IMAP|SMTP)_(USERNAME|PASSWORD)` and
+   * `IMAP_MCP_ACCOUNT_*_OAUTH_REFRESH_TOKEN` variable
    * into an encrypted in-memory cache and delete it from `process.env`. Run once
    * in the constructor so the plaintext secrets do not linger in the process
    * environment (where they could leak to child processes or diagnostics) any
@@ -215,21 +288,9 @@ export class AccountManager {
   }
 
   getAllAccounts(): ImapAccount[] {
-    return Array.from(this.accounts.values()).map(account => {
-      const decrypted: ImapAccount = {
-        ...account,
-        password: this.decryptField(account.password),
-      };
-
-      if (account.smtp?.password) {
-        decrypted.smtp = {
-          ...account.smtp,
-          password: this.decryptField(account.smtp.password),
-        };
-      }
-
-      return this.applyEnvOverrides(decrypted);
-    });
+    return Array.from(this.accounts.values()).map(account =>
+      this.applyEnvOverrides(this.decryptAccount(account))
+    );
   }
 
   /**
@@ -273,19 +334,7 @@ export class AccountManager {
     const account = Array.from(this.accounts.values()).find(acc => acc.name === name);
     if (!account) return undefined;
 
-    const decrypted: ImapAccount = {
-      ...account,
-      password: this.decryptField(account.password),
-    };
-
-    if (account.smtp?.password) {
-      decrypted.smtp = {
-        ...account.smtp,
-        password: this.decryptField(account.smtp.password),
-      };
-    }
-
-    return this.applyEnvOverrides(decrypted);
+    return this.applyEnvOverrides(this.decryptAccount(account));
   }
 
   private loadAccountsSync(): void {

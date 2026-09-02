@@ -30,6 +30,37 @@ export interface ImapAccount {
    * and draft. Merged with any per-call `bcc` (call-site values win for
    * ordering; duplicates are removed case-insensitively). */
   defaultBcc?: string | string[];
+  /** How the account authenticates. `password` (default, and assumed when the
+   * field is absent so existing stores keep working) logs in with `password`;
+   * `oauth2` uses XOAUTH2 with an access token minted from `oauth.refreshToken`
+   * and ignores `password` entirely. */
+  authType?: AuthType;
+  /** OAuth 2.0 state for `authType: 'oauth2'` accounts. `refreshToken` and
+   * `accessToken` are stored AES-256 encrypted, exactly like `password`. */
+  oauth?: OAuthConfig;
+}
+
+export type AuthType = 'password' | 'oauth2';
+
+export type OAuthProvider = 'microsoft';
+
+export interface OAuthConfig {
+  provider: OAuthProvider;
+  /** Application (client) ID of the Entra app registration used for the device-code flow. */
+  clientId: string;
+  /** Entra tenant: `consumers` (personal Outlook.com / Hotmail / Live — the
+   * default), `common`, `organizations`, or a tenant GUID / verified domain
+   * for Microsoft 365. */
+  tenant: string;
+  /** Long-lived refresh token (encrypted at rest). Empty string = env-managed
+   * via `IMAP_MCP_ACCOUNT_<NAME>_OAUTH_REFRESH_TOKEN`. */
+  refreshToken: string;
+  /** Cached short-lived access token (encrypted at rest). Optional. */
+  accessToken?: string;
+  /** Unix epoch milliseconds when `accessToken` expires. */
+  accessTokenExpiresAt?: number;
+  /** Scopes granted to the tokens. */
+  scopes: string[];
 }
 
 export interface SmtpConfig {
