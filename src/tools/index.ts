@@ -169,7 +169,7 @@ export function registerTools(
   // Sweep (age-based filing by sender; dry-run by default, mutating otherwise)
   sweepTools(target, imapService, accountManager);
   // Outlook.com / Microsoft 365 inbox rules via Microsoft Graph
-  outlookRulesTools(target, accountManager, oauthService, rulesService);
+  outlookRulesTools(target, accountManager, oauthService, rulesService, imapService);
 
   if (enabled) {
     // Log to stderr only — stdout is the JSON-RPC channel.

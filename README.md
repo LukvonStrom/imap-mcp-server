@@ -948,7 +948,7 @@ until that consent exists, and a clear error for non-Microsoft accounts.
   - exceptSubjectContains, exceptSenderContains, exceptFromAddresses: Exceptions
   - action: "move" | "markRead" | "moveAndMarkRead" | "delete"
   - moveToFolder: Display path ("Newsletters", "Inbox/Uber", "Archive"); required for move actions
-  - createFolder: Create moveToFolder (and missing parents) if absent (default: false)
+  - createFolder: Create moveToFolder (and missing parents) if absent (default: false). The folder is created over the account's IMAP session, not Graph, so no extra Graph write scope is needed
   - markImportance: "low" | "normal" | "high" (optional)
   - stopProcessingRules: Stop evaluating later rules on a match (default: true)
   - confirmDelete: Must be true for action "delete"

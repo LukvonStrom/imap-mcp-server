@@ -233,11 +233,15 @@ function consentRequired(account: ImapAccount, detail?: string) {
   });
 }
 
+/** The one IMAP capability the rules tools borrow: creating a folder without a Graph write scope. */
+export type FolderCreator = { createFolder(accountId: string, folderPath: string): Promise<unknown> };
+
 export function outlookRulesTools(
   server: McpServer,
   accountManager: AccountManager,
   oauthService: MicrosoftOAuthService,
   rulesService: OutlookRulesService,
+  imapService?: FolderCreator,
 ): void {
   /** Resolve the selector to an account and insist on a Microsoft OAuth one. */
   function loadAccount(rawAccountId: string | undefined, accountName: string | undefined): ImapAccount {
@@ -291,7 +295,21 @@ export function outlookRulesTools(
   }
 
   async function resolveMoveTarget(account: ImapAccount, path: string, create: boolean): Promise<{ folder: GraphFolder; created: string[] }> {
-    return rulesService.resolveFolder(account, path, { create });
+    if (!create || !imapService) {
+      return rulesService.resolveFolder(account, path, { create });
+    }
+    // Creating a folder through Graph needs Mail.ReadWrite, which the rules
+    // consent deliberately does not ask for (Mail.ReadBasic only). The IMAP
+    // session is already authorised for the same mailbox, so create there and
+    // let Graph merely look the new folder up.
+    try {
+      return await rulesService.resolveFolder(account, path, { create: false });
+    } catch (err) {
+      if (err instanceof ConsentRequiredError) throw err;
+      await imapService.createFolder(account.id, path);
+      const resolved = await rulesService.resolveFolder(account, path, { create: false });
+      return { folder: resolved.folder, created: [path] };
+    }
   }
 
   // ---------------------------------------------------------------------------

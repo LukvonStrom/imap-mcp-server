@@ -69,6 +69,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `READ_ONLY_TOOLS` (`IMAP_MCP_READ_ONLY`). Tool names, descriptions, inputs, and
   outputs are unchanged.
 
+- `imap_outlook_create_rule` / `update_rule` with `createFolder: true` create the
+  target folder over IMAP (Graph folder creation would need `Mail.ReadWrite`,
+  which the rules consent deliberately does not request).
+
 ### Security (hostile audit, 2026-09-03)
 - `imap_download_attachment.savePath` is confined to the download directory /
   `IMAP_ATTACHMENT_ROOTS`, never follows a symlinked parent outside them, and
