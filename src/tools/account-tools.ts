@@ -7,11 +7,15 @@ import {
   MicrosoftOAuthService,
   DEFAULT_MICROSOFT_TENANT,
   DEFAULT_POLL_MAX_WAIT_MS,
+  MICROSOFT_GRAPH_RULES_SCOPES,
   MS_CLIENT_ID_ENV,
+  allScopesGranted,
   isValidTenant,
+  mergeScopes,
   resolveMicrosoftClientId,
 } from '../services/oauth-service.js';
 import { getProviderById } from '../providers/email-providers.js';
+import type { PendingGraphConsent } from './outlook-rules-tools.js';
 import type { ImapAccount, OAuthConfig } from '../types/index.js';
 import { z } from 'zod';
 
@@ -21,6 +25,8 @@ import { z } from 'zod';
  * OAuth service, keyed by the flowId. Contains no secrets.
  */
 interface PendingOAuthAccount {
+  /** Absent or `'account'` — distinguishes this from a `PendingGraphConsent`. */
+  kind?: 'account';
   accountId?: string;
   name: string;
   email: string;
@@ -34,10 +40,24 @@ interface PendingOAuthAccount {
   defaultBcc?: string | string[];
 }
 
+/**
+ * Everything `imap_complete_oauth_login` may find attached to a flow: a new
+ * or re-authorized mailbox, or a consent-only round for Graph inbox rules on
+ * an existing account (`imap_outlook_authorize_rules`).
+ */
+type PendingOAuthContext = PendingOAuthAccount | PendingGraphConsent;
+
 /** The non-secret part of an account's OAuth config, safe to return from tools. */
 function publicOAuth(oauth: OAuthConfig | undefined) {
   if (!oauth) return undefined;
-  return { provider: oauth.provider, tenant: oauth.tenant, clientId: oauth.clientId, scopes: oauth.scopes };
+  return {
+    provider: oauth.provider,
+    tenant: oauth.tenant,
+    clientId: oauth.clientId,
+    scopes: oauth.scopes,
+    ...(oauth.grantedScopes ? { grantedScopes: oauth.grantedScopes } : {}),
+    ...(oauth.grantedScopes ? { graphRulesConsent: allScopesGranted(oauth.grantedScopes, MICROSOFT_GRAPH_RULES_SCOPES) } : {}),
+  };
 }
 
 
@@ -375,13 +395,13 @@ export function accountTools(
   server.registerTool('imap_complete_oauth_login', {
     title: 'Complete OAuth sign-in',
     annotations: NETWORK_AUTH,
-    description: 'Step 2 of the OAuth 2.0 sign-in started by imap_add_oauth_account. Waits (up to ~25 seconds) for the user to finish signing in at the verification URL, then stores the account with its encrypted tokens and runs a connection test. Returns status "pending" if the user has not finished yet — call again with the same flowId until it returns "complete", "expired", "denied", or "error". Never returns tokens.',
+    description: 'Step 2 of the OAuth 2.0 sign-in started by imap_add_oauth_account (or of the Graph consent started by imap_outlook_authorize_rules). Waits (up to ~25 seconds) for the user to finish signing in at the verification URL, then stores the account with its encrypted tokens and runs a connection test — or, for a Graph consent flow, updates the existing account\'s tokens and granted scopes in place. Returns status "pending" if the user has not finished yet — call again with the same flowId until it returns "complete", "expired", "denied", or "error". Never returns tokens.',
     inputSchema: {
-      flowId: z.string().describe('The flowId returned by imap_add_oauth_account'),
+      flowId: z.string().describe('The flowId returned by imap_add_oauth_account or imap_outlook_authorize_rules'),
       maxWaitSeconds: z.coerce.number().min(1).max(25).optional().describe('How long this call may wait for the sign-in before returning "pending" (1–25 seconds, default 25). Lower it if your MCP client times out'),
     }
   }, async ({ flowId, maxWaitSeconds }) => {
-    const result = await oauthService.pollDeviceCode<PendingOAuthAccount>(flowId, {
+    const result = await oauthService.pollDeviceCode<PendingOAuthContext>(flowId, {
       maxWaitMs: maxWaitSeconds !== undefined ? maxWaitSeconds * 1000 : DEFAULT_POLL_MAX_WAIT_MS,
     });
 
@@ -418,6 +438,45 @@ export function accountTools(
       throw new Error('OAuth flow completed but no account details were attached to it. Start over with imap_add_oauth_account.');
     }
 
+    if (pending.kind === 'graph-consent') {
+      // Consent-only round for an existing account: the user just granted the
+      // Graph scopes. The refresh token Microsoft returned now covers both
+      // resources, so it replaces the stored one; the access token is a Graph
+      // token and only seeds the in-memory cache — the mail token is untouched.
+      const existing = accountManager.getAccount(pending.accountId);
+      if (!existing?.oauth) {
+        throw new Error(`Account ${pending.accountId} no longer exists or is not an OAuth account. Start over with imap_outlook_authorize_rules.`);
+      }
+      const grantedScopes = mergeScopes(existing.oauth.grantedScopes ?? existing.oauth.scopes, result.tokens.scopes);
+      await accountManager.updateOAuthTokens(pending.accountId, {
+        refreshToken: result.tokens.refreshToken,
+        grantedScopes,
+      });
+      oauthService.forgetResourceTokens(pending.accountId);
+      oauthService.primeAccessToken(existing, pending.scopes, result.tokens.accessToken, result.tokens.accessTokenExpiresAt);
+      const graphRulesConsent = allScopesGranted(grantedScopes, MICROSOFT_GRAPH_RULES_SCOPES);
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            status: 'complete',
+            success: graphRulesConsent,
+            kind: 'graph-consent',
+            accountId: existing.id,
+            name: existing.name,
+            grantedScopes,
+            graphRulesConsent,
+            message: graphRulesConsent
+              ? `Account "${existing.name}" now has Microsoft Graph access for inbox rules. Use imap_outlook_list_rules / imap_outlook_create_rule next.`
+              : `The sign-in completed but Microsoft granted only: ${result.tokens.scopes.join(', ') || '(none)'}. Check that the Entra app registration lists the delegated Microsoft Graph permissions MailboxSettings.ReadWrite and Mail.ReadBasic, then run imap_outlook_authorize_rules again.`,
+            ...(graphRulesConsent ? { nextStep: 'imap_outlook_list_rules' } : {}),
+          }, null, 2)
+        }]
+      };
+    }
+
+    const previous = pending.accountId ? accountManager.getAccount(pending.accountId) : undefined;
     const oauth: OAuthConfig = {
       provider: 'microsoft',
       clientId: pending.clientId,
@@ -426,6 +485,11 @@ export function accountTools(
       accessToken: result.tokens.accessToken,
       accessTokenExpiresAt: result.tokens.accessTokenExpiresAt,
       scopes: result.tokens.scopes,
+      // A mailbox re-authorization does not revoke an earlier Graph consent,
+      // so carry the wider grant over instead of forgetting it.
+      ...(previous?.oauth?.grantedScopes
+        ? { grantedScopes: mergeScopes(previous.oauth.grantedScopes, result.tokens.scopes) }
+        : {}),
     };
 
     let account: ImapAccount;
@@ -435,6 +499,7 @@ export function accountTools(
       // not accept it anyway.
       await imapService.disconnect(pending.accountId);
       smtpService.disconnect(pending.accountId);
+      oauthService.forgetResourceTokens(pending.accountId);
       account = await accountManager.updateAccount(pending.accountId, {
         name: pending.name,
         host: pending.host,

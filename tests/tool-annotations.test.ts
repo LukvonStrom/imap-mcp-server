@@ -100,7 +100,7 @@ describe('MCP tool annotations', () => {
     expect(wrong).toEqual([]);
   });
 
-  it('only mail delivery and OAuth sign-in are open-world', () => {
+  it('only mail delivery, OAuth sign-in, and the Graph rules tools are open-world', () => {
     const openWorld = tools
       .filter(t => t.annotations?.openWorldHint === true)
       .map(t => t.name)
@@ -109,8 +109,23 @@ describe('MCP tool annotations', () => {
       'imap_add_oauth_account',
       'imap_complete_oauth_login',
       'imap_forward_email',
+      // Outlook inbox rules live on graph.microsoft.com, not the user's IMAP server.
+      'imap_outlook_authorize_rules',
+      'imap_outlook_create_rule',
+      'imap_outlook_delete_rule',
+      'imap_outlook_list_rules',
+      'imap_outlook_update_rule',
       'imap_reply_to_email',
       'imap_send_email',
     ]);
+  });
+
+  it('the Graph rules tools carry the intended hints', () => {
+    const byName = new Map(tools.map(t => [t.name, t.annotations!]));
+    expect(byName.get('imap_outlook_list_rules')).toEqual({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true });
+    expect(byName.get('imap_outlook_create_rule')).toEqual({ readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true });
+    expect(byName.get('imap_outlook_update_rule')).toEqual({ readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true });
+    expect(byName.get('imap_outlook_delete_rule')).toEqual({ readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true });
+    expect(byName.get('imap_outlook_authorize_rules')).toEqual({ readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true });
   });
 });

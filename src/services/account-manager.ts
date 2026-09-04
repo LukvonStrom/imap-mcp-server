@@ -21,6 +21,8 @@ export interface OAuthTokenUpdate {
   refreshToken?: string;
   accessToken?: string;
   accessTokenExpiresAt?: number;
+  /** Replaces `oauth.grantedScopes` (not encrypted — scope names are not secrets). */
+  grantedScopes?: string[];
 }
 
 export class AccountManager {
@@ -140,6 +142,9 @@ export class AccountManager {
     }
     if (tokens.accessTokenExpiresAt !== undefined) {
       oauth.accessTokenExpiresAt = tokens.accessTokenExpiresAt;
+    }
+    if (tokens.grantedScopes !== undefined) {
+      oauth.grantedScopes = [...tokens.grantedScopes];
     }
 
     this.accounts.set(id, { ...existing, oauth });
