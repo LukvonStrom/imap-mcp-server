@@ -139,6 +139,9 @@ export interface MoveEmailBatchResult {
  * callers use it for plain string/regex matching (spam header analysis).
  */
 /** True when an imapflow bodyStructure tree holds any part flagged as an attachment. */
+/** UIDs per FETCH command in exportFolderRows. */
+export const EXPORT_FETCH_CHUNK = 500;
+
 export function hasAttachmentPart(node: any): boolean {
   if (!node) return false;
   if (node.disposition && String(node.disposition).toLowerCase() === 'attachment') return true;
@@ -712,7 +715,13 @@ export class ImapService {
       };
 
       let count = 0;
-      for await (const msg of client.fetch(uids, fetchQuery, { uid: true })) {
+      // Fetch in bounded chunks: a single FETCH over tens of thousands of UIDs
+      // is rejected or times out on large hosted mailboxes (Outlook.com
+      // answers "Command failed" for a 30k-message INBOX), and a chunk keeps
+      // memory flat while rows stream to the caller.
+      for (let i = 0; i < uids.length; i += EXPORT_FETCH_CHUNK) {
+        const chunk = uids.slice(i, i + EXPORT_FETCH_CHUNK);
+      for await (const msg of client.fetch(chunk, fetchQuery, { uid: true })) {
         const flags = new Set(Array.from(msg.flags || []) as string[]);
         const env: any = msg.envelope || {};
         const from = env.from?.[0] || {};
@@ -744,6 +753,7 @@ export class ImapService {
         };
         await onRow(row);
         count++;
+      }
       }
       return count;
     } finally {

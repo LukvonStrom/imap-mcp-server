@@ -232,15 +232,26 @@ export function exportTools(server: McpServer, imapService: ImapService, account
 
     try {
       for (const folder of targets) {
-        try {
-          perFolder[folder] = await imapService.exportFolderRows(
-            accountId,
-            folder,
-            { since: sinceDate, before: beforeDate, limit: limitPerFolder },
-            onRow,
-          );
-        } catch (err) {
-          errors.push(`${folder}: ${err instanceof Error ? err.message : String(err)}`);
+        // A failed folder must not poison the next: drop the pooled connection
+        // so ensureConnected() dials fresh, and give the folder one retry.
+        let lastErr: unknown;
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            perFolder[folder] = await imapService.exportFolderRows(
+              accountId,
+              folder,
+              { since: sinceDate, before: beforeDate, limit: limitPerFolder },
+              onRow,
+            );
+            lastErr = undefined;
+            break;
+          } catch (err) {
+            lastErr = err;
+            try { await imapService.disconnect(accountId); } catch { /* already gone */ }
+          }
+        }
+        if (lastErr !== undefined) {
+          errors.push(`${folder}: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`);
         }
       }
     } finally {
