@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `IMAP_MCP_CONFIG_DIR` relocates the credential store. From githappens' fork.
 - `allowStartTLS` opt-out for opportunistic STARTTLS (upstream PR #159).
 - Attachment validation, diagnostics and `dryRun` for `imap_send_email` (upstream PR #161).
+- `imap_sweep`: server-side equivalent of Outlook's "Sweep" — for a list of
+  senders, find messages in a folder older than N days (IMAP `BEFORE`, date-only)
+  and move them to a folder, mark them read, or delete them, keeping the newest
+  `keepLatest` per sender in place. Dry run by default; `delete` requires
+  `confirmDelete`; Trash/Junk sources are refused unless `allowSpecialFolders`.
+  Meant to be run on a schedule to emulate an "older than a week" rule that
+  Outlook.com / Gmail rules cannot express. Adds `ImapService.moveUids` (chunked
+  `UID MOVE` with per-chunk error capture) and `classifySpecialFolder`.
 - Every tool now declares a human-readable `title` and the MCP tool annotations
   (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) via
   typed presets in `src/tools/annotations.ts`, so clients can auto-approve reads

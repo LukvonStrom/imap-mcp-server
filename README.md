@@ -414,7 +414,7 @@ are exposed:
 | Hint | Meaning for the client | `true` for |
 | --- | --- | --- |
 | `readOnlyHint` | Nothing in the mailbox, the account store, or local config changes; safe to run without asking. | Exactly the `IMAP_MCP_READ_ONLY` subset above (attachment download and export write only to the local download directory). |
-| `destructiveHint` | The effect cannot be undone by this server — confirm before calling. | Every delete (`imap_delete_*`, `imap_bulk_delete*`, `imap_delete_folder`), `imap_remove_account`, and sending mail (`imap_send_email`, `imap_reply_to_email`, `imap_forward_email`). |
+| `destructiveHint` | The effect cannot be undone by this server — confirm before calling. | Every delete (`imap_delete_*`, `imap_bulk_delete*`, `imap_delete_folder`), `imap_remove_account`, sending mail (`imap_send_email`, `imap_reply_to_email`, `imap_forward_email`), and `imap_sweep` (it can delete; dry-run by default). |
 | `idempotentHint` | Repeating the call with the same arguments has no additional effect (a retry is harmless). | Reads, flag/keyword/move/folder edits, config edits. `false` for deletes, sends, drafts, uploads, exports, and adding accounts. |
 | `openWorldHint` | The tool reaches beyond your own mail server — third-party recipients or another host. | Sending mail and the Microsoft OAuth sign-in tools (`login.microsoftonline.com`). |
 
@@ -698,6 +698,39 @@ Once configured, the IMAP MCP server provides the following tools in Claude:
   - chunkSize: Emails to delete per batch (default: 50)
   - dryRun: Preview what would be deleted without deleting (default: false)
   ```
+
+- **imap_sweep**: Age-based inbox hygiene by sender — the server-side equivalent of Outlook's "Sweep". For a list of senders, find messages in a folder older than N days and move them to a folder, mark them read, or delete them, optionally keeping the newest few per sender in place. Outlook.com / Gmail rules cannot express "older than a week"; this tool can, and it works on any IMAP server. **Dry run by default** — the first call returns the plan, nothing changes until `dryRun: false`.
+  ```
+  Parameters:
+  - accountId: Account ID (or accountName)
+  - folder: Source folder (default: INBOX). Trash/Junk are refused unless allowSpecialFolders: true
+  - senders: Array of sender addresses or domain fragments, e.g. ["news@x.com", "@notifications.github.com"].
+      One IMAP FROM search per entry; results are unioned, so a message matched
+      by two entries is processed once. At least one is required.
+  - olderThanDays: Messages older than this many days qualify (required, >= 0).
+      Date-only: uses IMAP BEFORE with today (UTC) minus N days; 0 = before today.
+  - keepLatest: Always leave the newest N matching messages PER SENDER in place (default: 0)
+  - onlyUnread / onlySeen: Restrict by read state (mutually exclusive, optional)
+  - action: "move" (default) | "markRead" | "moveAndMarkRead" | "delete"
+  - targetFolder: Destination for move / moveAndMarkRead (required for those; must differ from folder)
+  - createFolder: Create targetFolder when missing (default: false — a missing target refuses the run)
+  - confirmDelete: Must be true for action "delete" (Trash-aware, same path as imap_bulk_delete)
+  - allowSpecialFolders: Allow a Trash/Junk source folder (default: false)
+  - dryRun: Report the plan only (default: TRUE). Pass false to apply.
+  - chunkSize: UIDs per IMAP command when moving/marking/deleting (default: 200)
+
+  Returns:
+  - dryRun, folder, action, targetFolder (+ targetFolderExists / targetFolderCreated), cutoffDate
+  - perSender[]: sender, matched, qualifying, keptUids, uids (capped at 200, `truncated` flag), oldest, newest
+  - totalMatched, totalPlanned, totalActioned, kept, failed, errors[]
+  ```
+  **Scheduling:** to emulate a rule such as "keep GitHub notifications in the
+  inbox for a week, then file them", run the same call on a schedule — a
+  recurring assistant task, a cron job driving the MCP server, or any client
+  automation — with `dryRun: false`:
+  `imap_sweep({ senders: ["@notifications.github.com"], olderThanDays: 7, keepLatest: 3, targetFolder: "Archive/GitHub", action: "moveAndMarkRead", dryRun: false })`.
+  Repeating the call is safe: messages it already filed are no longer in the
+  source folder, so a re-run only picks up what has aged since.
   At least one concrete criterion (`from`, `to`, `subject`, `before`, or `since`)
   is required — a call with no criteria is refused, so it can never match and
   delete an entire folder.
@@ -896,7 +929,8 @@ src/
 │   ├── index.ts          # Tool registration
 │   ├── account-tools.ts  # Account management tools
 │   ├── email-tools.ts    # Email operation tools (including send/reply/forward)
-│   └── folder-tools.ts   # Folder operation tools
+│   ├── folder-tools.ts   # Folder operation tools
+│   └── sweep-tools.ts    # imap_sweep: age-based filing by sender (dry-run by default)
 └── types/
     └── index.ts          # TypeScript type definitions
 ```

@@ -9,6 +9,7 @@ import { emailTools } from './email-tools.js';
 import { folderTools } from './folder-tools.js';
 import { spamTools } from './spam-tools.js';
 import { exportTools } from './export-tools.js';
+import { sweepTools } from './sweep-tools.js';
 
 /**
  * Read-only / safe-by-default subset of tools.
@@ -159,6 +160,9 @@ export function registerTools(
 
   // Export (read-only; writes only to the local download directory)
   exportTools(target, imapService, accountManager);
+
+  // Sweep (age-based filing by sender; dry-run by default, mutating otherwise)
+  sweepTools(target, imapService, accountManager);
 
   if (enabled) {
     // Log to stderr only — stdout is the JSON-RPC channel.

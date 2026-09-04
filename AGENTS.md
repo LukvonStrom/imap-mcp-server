@@ -50,6 +50,11 @@ working in this repository.
     mark read/unread, delete, bulk delete, move, attachments, upload, threads.
   - `folder-tools.ts` — list, status, create, unread counts.
   - `spam-tools.ts` — spam analysis, domain stats, allow/deny lists.
+  - `export-tools.ts` — `imap_export_messages` (metadata export + rule candidates).
+  - `sweep-tools.ts` — `imap_sweep`: age-based move / mark-read / delete by
+    sender (dry-run by default; `delete` needs `confirmDelete`; Trash/Junk
+    sources refused unless `allowSpecialFolders`). Uses `ImapService.moveUids`
+    for chunked `UID MOVE`.
 - **Web setup wizard** — `src/web/server.ts` (Express) serves `public/` for
   account onboarding (`npm run setup` / `imap-setup`).
 - **Types** — `src/types/index.ts`.
@@ -69,7 +74,7 @@ npm run setup        # launch the web setup wizard
 ```
 
 Always run `npm run build` **and** `npm test` before committing changes that
-touch `src/`. Keep the suite green (currently 490 tests).
+touch `src/`. Keep the suite green (currently 524 tests).
 
 > Note: `npm run lint` (`tsc --noEmit`) is memory-hungry on this project — the
 > MCP SDK's `registerTool` generics are deep enough to surface a pre-existing

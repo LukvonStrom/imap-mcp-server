@@ -62,3 +62,31 @@ export function selectSearchFolders(folders: Folder[], opts: FolderFilterOptions
     })
     .map(folder => folder.name);
 }
+
+/** Depth-first flatten of a nested folder tree (as returned by `ImapService.listFolders`). */
+export function flattenFolders(folders: Folder[]): Folder[] {
+  const out: Folder[] = [];
+  const walk = (list: Folder[]) => {
+    for (const f of list) {
+      out.push(f);
+      if (f.children?.length) walk(f.children);
+    }
+  };
+  walk(folders);
+  return out;
+}
+
+/**
+ * Classify a folder *name* as Trash, Spam, or neither, for tools that must not
+ * treat those mailboxes as an ordinary source (`imap_sweep`). When the account's
+ * folder list is supplied, its RFC 6154 SPECIAL-USE flag wins; otherwise — and
+ * as a fallback for a name that is not in the list — the common leaf/full names
+ * above are matched case-insensitively.
+ */
+export function classifySpecialFolder(name: string, folders: Folder[] = []): 'trash' | 'spam' | null {
+  const known = flattenFolders(folders).find(f => f.name === name);
+  const folder: Folder = known ?? { name, delimiter: '/', attributes: [] };
+  if (matchesCategory(folder, '\\Trash', TRASH_FOLDER_NAMES)) return 'trash';
+  if (matchesCategory(folder, '\\Junk', SPAM_FOLDER_NAMES)) return 'spam';
+  return null;
+}

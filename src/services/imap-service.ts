@@ -1583,6 +1583,64 @@ export class ImapService {
     }
   }
 
+  /**
+   * Move many UIDs from `folderName` to `targetFolder` in bounded chunks.
+   *
+   * Unlike `moveEmail` (which moves one UID per command so a batch can be
+   * attributed per-uid), this issues one `UID MOVE` per chunk with a UID-set
+   * string — the shape a sweep of hundreds of messages needs. A chunk either
+   * moves atomically or fails as a whole; failures are recorded per chunk and
+   * never thrown, so a bad chunk does not lose the work done for its siblings.
+   * Mirrors `bulkDelete`: reconnect check before each chunk, mailbox lock
+   * released in `finally`, connection flagged for reconnect on error.
+   */
+  async moveUids(
+    accountId: string,
+    folderName: string,
+    uids: number[],
+    targetFolder: string,
+    chunkSize: number = 200,
+  ): Promise<{ moved: number; failed: number; errors: string[] }> {
+    const size = Math.max(1, Math.floor(chunkSize));
+    let moved = 0;
+    let failed = 0;
+    const errors: string[] = [];
+    if (uids.length === 0) {
+      return { moved, failed, errors };
+    }
+
+    for (let i = 0; i < uids.length; i += size) {
+      const chunk = uids.slice(i, i + size);
+      let lock;
+      try {
+        // Re-resolve the client per chunk: after a failed chunk the connection
+        // is flagged dead and ensureConnected hands back a fresh instance.
+        const client = await this.ensureConnected(accountId);
+        lock = await client.getMailboxLock(folderName);
+        const result = await client.messageMove(chunk.join(','), targetFolder, { uid: true });
+        if (!result) {
+          throw new Error('Server returned no result for the move');
+        }
+        moved += chunk.length;
+      } catch (err) {
+        failed += chunk.length;
+        errors.push(
+          `Failed to move UIDs ${chunk[0]}-${chunk[chunk.length - 1]} to ${targetFolder}: ${err instanceof Error ? err.message : 'Unknown error'}`,
+        );
+        const state = this.connections.get(accountId);
+        if (state) {
+          state.isConnected = false;
+        }
+      } finally {
+        if (lock) {
+          lock.release();
+        }
+      }
+    }
+
+    return { moved, failed, errors };
+  }
+
   async folderExists(accountId: string, folderPath: string): Promise<boolean> {
     const client = await this.ensureConnected(accountId);
     const list = await client.list();
