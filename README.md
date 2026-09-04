@@ -204,6 +204,11 @@ a one-time setup is needed to get an *Application (client) ID*:
    is requested automatically at sign-in.)
 7. On the **Overview** page copy the **Application (client) ID**.
 
+Prefer the CLI? `scripts/register-entra-app.sh` does all seven steps with the
+[Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) (`az login`
+with the mailbox's Microsoft account, then one app registration with the two
+delegated permissions) and prints the client ID.
+
 Give the client ID to the server either per call (`clientId`) or once via the
 environment variable **`IMAP_MCP_MS_CLIENT_ID`** in your MCP client config:
 
