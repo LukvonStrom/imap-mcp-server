@@ -41,11 +41,41 @@ working in this repository.
     `AccountManager.updateOAuthTokens`. Talks only to
     `https://login.microsoftonline.com`. `ImapService` / `SmtpService` obtain
     tokens from it via `getValidAccessToken` (IMAP retries once with
-    `forceRefresh` on an `authenticationFailed` error).
+    `forceRefresh` on an `authenticationFailed` error). Access tokens are
+    **resource-bound** (one Microsoft resource per token), so
+    `getValidAccessToken(account, scopes)` takes the scope set: the mail
+    scopes (default) are cached on the account as before; any other set —
+    `MICROSOFT_GRAPH_RULES_SCOPES` for inbox rules — is cached in memory only,
+    keyed by (account, scope set). The refresh token is shared across
+    resources; a refresh that fails for a non-mail set with
+    `invalid_grant` / `AADSTS65001` throws `ConsentRequiredError` (the user
+    has not consented to that resource) rather than the "re-authorize the
+    mailbox" error. `oauth.grantedScopes` records every scope the user has
+    consented to (`scopes` stays the mail set).
+  - `OutlookRulesService` (`src/services/outlook-rules-service.ts`) — thin
+    Microsoft Graph client (global `fetch`, Bearer token from the OAuth
+    service) for Outlook.com / Microsoft 365 **inbox rules**
+    (`/me/mailFolders/inbox/messageRules`) and the folder lookups a
+    `moveToFolder` needs (well-known names `inbox`/`junkemail`/… map
+    directly; other paths walk `/me/mailFolders` → `childFolders` per
+    segment, case-insensitive). Retries a 401 once after `forceRefresh`,
+    honours one `Retry-After` on 429, maps 401/403 to
+    `ConsentRequiredError` and everything else to `GraphApiError`
+    (`status`, Graph `code`). Talks only to `https://graph.microsoft.com`.
   - `SpamService` — disposable/known-spam domain detection.
 - **Tools** (`src/tools/`), grouped by area:
   - `account-tools.ts` — add / update / list / remove / connect / disconnect / test,
-    plus the OAuth pair `imap_add_oauth_account` / `imap_complete_oauth_login`.
+    plus the OAuth pair `imap_add_oauth_account` / `imap_complete_oauth_login`
+    (the latter also finishes the `graph-consent` flow started by
+    `imap_outlook_authorize_rules`: it widens the existing account's refresh
+    token and `grantedScopes` instead of creating an account).
+  - `outlook-rules-tools.ts` — `imap_outlook_authorize_rules` (Graph consent,
+    device-code) and `imap_outlook_list_rules` / `_create_rule` /
+    `_update_rule` / `_delete_rule`. All require `authType: 'oauth2'` +
+    `provider: 'microsoft'` and return `{ error: 'graph-consent-required',
+    nextStep: 'imap_outlook_authorize_rules' }` while the Graph scopes are
+    missing. Create refuses a rule without conditions and `action: 'delete'`
+    without `confirmDelete: true`.
   - `email-tools.ts` — search, get, latest, send, reply, forward, save draft,
     mark read/unread, delete, bulk delete, move, attachments, upload, threads.
   - `folder-tools.ts` — list, status, create, unread counts.
@@ -69,7 +99,7 @@ npm run setup        # launch the web setup wizard
 ```
 
 Always run `npm run build` **and** `npm test` before committing changes that
-touch `src/`. Keep the suite green (currently 490 tests).
+touch `src/`. Keep the suite green (currently 543 tests).
 
 > Note: `npm run lint` (`tsc --noEmit`) is memory-hungry on this project — the
 > MCP SDK's `registerTool` generics are deep enough to surface a pre-existing
@@ -94,7 +124,10 @@ touch `src/`. Keep the suite green (currently 490 tests).
 4. **Credentials stay local.** Do not add telemetry, analytics, crash reporting,
    or any third-party network calls. The only outbound connections are to the
    user's own IMAP/SMTP servers — plus, for OAuth accounts only,
-   `login.microsoftonline.com` for the token exchange/refresh. Any new outbound
+   `login.microsoftonline.com` for the token exchange/refresh, and
+   `graph.microsoft.com` for the `imap_outlook_*` inbox-rules tools (Graph is
+   the only API for Outlook rules; only rule/folder metadata crosses that
+   connection, never mail bodies or the mailbox credential). Any new outbound
    host needs the same treatment: documented in README.md and SECURITY.md.
 5. **Validate and sanitize file paths** for attachment upload/download (already
    done via `path.basename`); keep writes confined to the configured directories.
@@ -122,8 +155,10 @@ touch `src/`. Keep the suite green (currently 490 tests).
   `DESTRUCTIVE`, `SENDS_MAIL`, `NETWORK_AUTH`; each documents its reasoning)
   and spread an override only when one hint genuinely differs. Rules of thumb:
   anything that deletes or sends mail is `destructiveHint: true`; only
-  delivery to third parties and the OAuth identity host are
-  `openWorldHint: true` (the user's own IMAP/SMTP server is closed-world);
+  delivery to third parties, the OAuth identity host, and the Graph
+  inbox-rules tools are `openWorldHint: true` (the user's own IMAP/SMTP
+  server is closed-world; `graph.microsoft.com` is another host, so even
+  the read-only `imap_outlook_list_rules` is open-world);
   `readOnlyHint: true` tools must also be listed in `READ_ONLY_TOOLS`
   (`src/tools/index.ts`) — `tests/tool-annotations.test.ts` enforces all of
   this. Tools still return JSON as text content; `outputSchema` /

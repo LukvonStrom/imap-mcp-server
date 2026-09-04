@@ -24,7 +24,14 @@ control**.
   `login.microsoftonline.com` — Microsoft's own identity service — to run the
   device-code sign-in and to exchange the refresh token for access tokens.
   Only the OAuth parameters (client ID, tenant, scopes, device/refresh token)
-  go there; never mail content or the mailbox password.
+  go there; never mail content or the mailbox password. If you use the
+  **Outlook inbox-rules tools** (`imap_outlook_*`), the server also talks to
+  `graph.microsoft.com` — Microsoft Graph, the only API for Outlook rules —
+  with a separate access token you consent to once
+  (`imap_outlook_authorize_rules`; scopes `MailboxSettings.ReadWrite` and
+  `Mail.ReadBasic`). Only rule definitions and folder names/ids travel over
+  that connection; the tools never read message bodies through Graph. Those
+  are the only two hosts besides your own IMAP/SMTP servers.
 - **Your MCP client sees your mail.** Email content returned by these tools is
   passed to whichever MCP client/LLM you connect (e.g. Claude, ChatGPT, Cursor).
   Review that client's own privacy terms; treat any connected model as a party
@@ -38,7 +45,9 @@ control**.
   password to be re-supplied in the same call (OAuth accounts are pinned to
   Microsoft hosts); account names are unique so environment credential
   overrides cannot be captured by a look-alike account; bulk deletes need
-  concrete, valid criteria; every tool carries MCP annotations so clients can
+  concrete, valid criteria; an Outlook inbox rule cannot be created without
+  a condition (it would apply to all mail) and a rule that deletes mail must
+  be explicitly confirmed; every tool carries MCP annotations so clients can
   require confirmation for destructive ones.
 
 ## Recommendations for users
@@ -47,7 +56,8 @@ control**.
   iCloud, Yahoo, Fastmail, …) instead of your primary password. Outlook.com and
   Microsoft 365 accept neither and must use the OAuth 2.0 flow
   (`imap_add_oauth_account`); revoke that consent in your Microsoft account's
-  "Apps and services" page if you stop using the server.
+  "Apps and services" page if you stop using the server (the same page
+  revokes the inbox-rules consent from `imap_outlook_authorize_rules`).
 - Keep `~/.imap-mcp/` readable only by your user account.
 - Prefer least-privilege accounts/folders when possible.
 - Be deliberate with destructive tools (`imap_delete_email`,
