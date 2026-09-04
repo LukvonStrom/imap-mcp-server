@@ -14,6 +14,15 @@ import type { AccountManager } from './account-manager.js';
  * Outbound traffic: `https://login.microsoftonline.com` only (the device-code
  * and token endpoints). Tokens are never logged; the device_code never leaves
  * this process.
+ *
+ * Access tokens are resource-bound: Microsoft's v2 endpoint mints a token for
+ * exactly one resource per request, so a token that works against IMAP/SMTP
+ * (`https://outlook.office.com/...`) is useless against Microsoft Graph and
+ * vice versa. The *refresh* token of a public client is multi-resource,
+ * though — once the user has consented to a second resource's scopes, the
+ * same refresh token can be redeemed for either. `getValidAccessToken` takes
+ * the scope set and caches per (account, scope set): mail tokens persist on
+ * the account as before, every other set lives in memory only.
  */
 
 export const MICROSOFT_LOGIN_HOST = 'https://login.microsoftonline.com';
@@ -24,6 +33,64 @@ export const MICROSOFT_OAUTH_SCOPES = [
   'https://outlook.office.com/SMTP.Send',
   'offline_access',
 ];
+
+/**
+ * Microsoft Graph scopes for managing inbox rules: `MailboxSettings.ReadWrite`
+ * covers `/me/mailFolders/inbox/messageRules`; `Mail.ReadBasic` is the least
+ * privilege that lists `/me/mailFolders` (needed to turn a folder path into
+ * the id a rule's `moveToFolder` wants). `offline_access` keeps the refresh
+ * token covering this resource too.
+ */
+export const MICROSOFT_GRAPH_RULES_SCOPES = [
+  'https://graph.microsoft.com/MailboxSettings.ReadWrite',
+  'https://graph.microsoft.com/Mail.ReadBasic',
+  'offline_access',
+];
+
+/**
+ * Whether `granted` (as returned by Microsoft in a token response) covers
+ * `wanted`. Microsoft reports Exchange scopes with their resource URI
+ * (`https://outlook.office.com/IMAP.AccessAsUser.All`) but Graph scopes in
+ * short form (`Mail.ReadBasic`), so the comparison accepts either spelling:
+ * the full URI, or the last path segment, case-insensitively.
+ */
+export function scopeGranted(granted: readonly string[] | undefined, wanted: string): boolean {
+  if (!granted?.length) return false;
+  const short = (scope: string) => scope.slice(scope.lastIndexOf('/') + 1).toLowerCase();
+  const wantedFull = wanted.toLowerCase();
+  const wantedShort = short(wanted);
+  return granted.some(g => g.toLowerCase() === wantedFull || short(g) === wantedShort);
+}
+
+/** Union of two scope lists, first occurrence wins, de-duplicated case-insensitively. */
+export function mergeScopes(...lists: (readonly string[] | undefined)[]): string[] {
+  const out: string[] = [];
+  for (const list of lists) {
+    for (const scope of list ?? []) {
+      if (!out.some(s => s.toLowerCase() === scope.toLowerCase())) out.push(scope);
+    }
+  }
+  return out;
+}
+
+/** True when every non-`offline_access` scope in `wanted` has been granted. */
+export function allScopesGranted(granted: readonly string[] | undefined, wanted: readonly string[]): boolean {
+  return wanted.filter(s => s !== 'offline_access').every(s => scopeGranted(granted, s));
+}
+
+/**
+ * Thrown when a refresh for a scope set fails because the user has not
+ * consented to it (Entra `AADSTS65001` / `consent_required`, or a refresh
+ * token that does not cover the resource). Callers map it to a structured
+ * "run the authorize tool" response instead of a generic failure.
+ */
+export class ConsentRequiredError extends Error {
+  readonly code = 'consent_required' as const;
+  constructor(message: string, readonly scopes: readonly string[], readonly accountId: string) {
+    super(message);
+    this.name = 'ConsentRequiredError';
+  }
+}
 
 /** Personal Microsoft accounts (Outlook.com / Hotmail / Live / MSN). */
 export const DEFAULT_MICROSOFT_TENANT = 'consumers';
@@ -133,8 +200,14 @@ export function resolveMicrosoftClientId(explicit?: string, env: NodeJS.ProcessE
 
 export class MicrosoftOAuthService {
   private flows: Map<string, PendingFlow> = new Map();
-  /** In-flight refreshes keyed by account id, so IMAP and SMTP share one refresh. */
+  /** In-flight refreshes keyed by account id + scope set, so IMAP and SMTP share one refresh. */
   private refreshes: Map<string, Promise<string>> = new Map();
+  /**
+   * Access tokens for non-mail scope sets (e.g. Graph), keyed like
+   * `refreshes`. Memory only: the persisted `oauth.accessToken` stays the
+   * mail token, and a Graph token is cheap to mint again after a restart.
+   */
+  private resourceTokens: Map<string, { accessToken: string; expiresAt: number }> = new Map();
   private accountManager?: AccountManager;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => number;
@@ -312,27 +385,56 @@ export class MicrosoftOAuthService {
     }
   }
 
+  /** The scopes an account's mail tokens are minted with. */
+  private mailScopes(oauth: OAuthConfig): string[] {
+    return oauth.scopes?.length ? oauth.scopes : MICROSOFT_OAUTH_SCOPES;
+  }
+
+  /** Cache / in-flight key for one (account, scope set). Order-insensitive. */
+  private scopeKey(accountId: string, scopes: readonly string[]): string {
+    return `${accountId}|${[...new Set(scopes.map(s => s.toLowerCase()))].sort().join(' ')}`;
+  }
+
   /**
    * Exchange the account's refresh token for a new access token. Microsoft
    * may rotate the refresh token; when it does, the new one is returned too.
+   *
+   * `scopes` selects the resource the token is for and defaults to the mail
+   * scopes. Any other set (Graph) is a second resource the user must have
+   * consented to; a rejection there surfaces as `ConsentRequiredError` so
+   * the caller can point at the authorize tool rather than at a full
+   * re-authorization of the mailbox.
    */
-  async refreshAccessToken(account: ImapAccount): Promise<RefreshResult> {
+  async refreshAccessToken(account: ImapAccount, scopes?: readonly string[]): Promise<RefreshResult> {
     const oauth = this.requireOAuth(account);
     if (!oauth.refreshToken) {
       throw new Error(
         `Account "${account.name}" has no OAuth refresh token. Re-authorize it with imap_add_oauth_account (accountId: ${account.id}).`
       );
     }
+    const requested = scopes ?? this.mailScopes(oauth);
+    const isMail = this.scopeKey(account.id, requested) === this.scopeKey(account.id, this.mailScopes(oauth));
 
     const { ok, status, body } = await this.postForm<TokenResponse>(this.endpoint(oauth.tenant, 'token'), {
       grant_type: 'refresh_token',
       client_id: oauth.clientId,
       refresh_token: oauth.refreshToken,
-      scope: (oauth.scopes?.length ? oauth.scopes : MICROSOFT_OAUTH_SCOPES).join(' '),
+      scope: requested.join(' '),
     });
 
     if (!ok || !body.access_token) {
       const detail = body.error_description || body.error || `HTTP ${status}`;
+      const consentCodes = ['invalid_grant', 'interaction_required', 'consent_required', 'invalid_scope'];
+      if (!isMail && consentCodes.includes(body.error ?? '')) {
+        const list = requested.filter(s => s !== 'offline_access').join(', ');
+        throw new ConsentRequiredError(
+          `Microsoft would not issue a token for ${list} on account "${account.name}" (${body.error}). ` +
+          'The user has not consented to these scopes yet (or the consent was revoked); the mailbox sign-in itself is unaffected. ' +
+          `Details: ${detail}`,
+          requested,
+          account.id,
+        );
+      }
       if (body.error === 'invalid_grant' || body.error === 'interaction_required') {
         throw new Error(
           `The OAuth refresh token for account "${account.name}" was rejected (${body.error}). ` +
@@ -358,40 +460,80 @@ export class MicrosoftOAuthService {
    * a caller holding the object sees the fresh token. Concurrent callers for
    * the same account share a single refresh.
    */
-  async getValidAccessToken(account: ImapAccount): Promise<string> {
+  async getValidAccessToken(account: ImapAccount, scopes?: readonly string[]): Promise<string> {
     const oauth = this.requireOAuth(account);
-    if (
-      oauth.accessToken &&
-      oauth.accessTokenExpiresAt !== undefined &&
-      oauth.accessTokenExpiresAt - this.now() > REFRESH_MARGIN_MS
-    ) {
-      return oauth.accessToken;
+    const requested = scopes ?? this.mailScopes(oauth);
+    const key = this.scopeKey(account.id, requested);
+    const isMail = key === this.scopeKey(account.id, this.mailScopes(oauth));
+
+    if (isMail) {
+      if (
+        oauth.accessToken &&
+        oauth.accessTokenExpiresAt !== undefined &&
+        oauth.accessTokenExpiresAt - this.now() > REFRESH_MARGIN_MS
+      ) {
+        return oauth.accessToken;
+      }
+    } else {
+      const cached = this.resourceTokens.get(key);
+      if (cached && cached.expiresAt - this.now() > REFRESH_MARGIN_MS) {
+        return cached.accessToken;
+      }
     }
-    return this.forceRefresh(account);
+    return this.forceRefresh(account, requested);
+  }
+
+  /**
+   * Seed the in-memory cache for a non-mail scope set with a token that was
+   * just minted elsewhere (the device-code flow for Graph consent returns
+   * one), so the first Graph call after consenting needs no refresh. Mail
+   * scopes are ignored here — those go through the account store.
+   */
+  primeAccessToken(account: ImapAccount, scopes: readonly string[], accessToken: string, expiresAt: number): void {
+    const oauth = this.requireOAuth(account);
+    const key = this.scopeKey(account.id, scopes);
+    if (key === this.scopeKey(account.id, this.mailScopes(oauth))) return;
+    this.resourceTokens.set(key, { accessToken, expiresAt });
+  }
+
+  /** Drop every cached non-mail token for an account (after re-authorization or removal). */
+  forgetResourceTokens(accountId: string): void {
+    for (const key of [...this.resourceTokens.keys()]) {
+      if (key.startsWith(`${accountId}|`)) this.resourceTokens.delete(key);
+    }
   }
 
   /**
    * Refresh regardless of the cached token's age — used after the server
    * rejected a token that looked valid (revoked, or clock skew).
    */
-  async forceRefresh(account: ImapAccount): Promise<string> {
-    const inFlight = this.refreshes.get(account.id);
+  async forceRefresh(account: ImapAccount, scopes?: readonly string[]): Promise<string> {
+    const oauth = this.requireOAuth(account);
+    const requested = scopes ?? this.mailScopes(oauth);
+    const key = this.scopeKey(account.id, requested);
+    const isMail = key === this.scopeKey(account.id, this.mailScopes(oauth));
+
+    const inFlight = this.refreshes.get(key);
     if (inFlight) return inFlight;
 
     const run = (async () => {
-      const result = await this.refreshAccessToken(account);
-      const oauth = this.requireOAuth(account);
-      oauth.accessToken = result.accessToken;
-      oauth.accessTokenExpiresAt = result.accessTokenExpiresAt;
+      const result = await this.refreshAccessToken(account, requested);
+      if (isMail) {
+        oauth.accessToken = result.accessToken;
+        oauth.accessTokenExpiresAt = result.accessTokenExpiresAt;
+      } else {
+        this.resourceTokens.set(key, { accessToken: result.accessToken, expiresAt: result.accessTokenExpiresAt });
+      }
       if (result.refreshToken) {
         oauth.refreshToken = result.refreshToken;
       }
 
-      if (this.accountManager) {
+      // Mail tokens are persisted as before. For any other resource only a
+      // rotated refresh token is worth writing — the access token is memory-only.
+      if (this.accountManager && (isMail || result.refreshToken)) {
         try {
           await this.accountManager.updateOAuthTokens(account.id, {
-            accessToken: result.accessToken,
-            accessTokenExpiresAt: result.accessTokenExpiresAt,
+            ...(isMail ? { accessToken: result.accessToken, accessTokenExpiresAt: result.accessTokenExpiresAt } : {}),
             ...(result.refreshToken ? { refreshToken: result.refreshToken } : {}),
           });
         } catch (err) {
@@ -407,11 +549,11 @@ export class MicrosoftOAuthService {
       return result.accessToken;
     })();
 
-    this.refreshes.set(account.id, run);
+    this.refreshes.set(key, run);
     try {
       return await run;
     } finally {
-      this.refreshes.delete(account.id);
+      this.refreshes.delete(key);
     }
   }
 

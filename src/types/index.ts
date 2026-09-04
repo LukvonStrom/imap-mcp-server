@@ -63,8 +63,14 @@ export interface OAuthConfig {
   accessToken?: string;
   /** Unix epoch milliseconds when `accessToken` expires. */
   accessTokenExpiresAt?: number;
-  /** Scopes granted to the tokens. */
+  /** Scopes the mail (IMAP/SMTP) tokens are minted with. */
   scopes: string[];
+  /** Every scope the user has consented to for this app, across resources —
+   * the mail scopes plus, after `imap_outlook_authorize_rules`, the Microsoft
+   * Graph scopes used for inbox rules. Lets tools tell whether Graph consent
+   * exists without a round trip. Absent on accounts created before Graph
+   * support; `scopes` is then the whole grant. Not a secret. */
+  grantedScopes?: string[];
 }
 
 export interface SmtpConfig {

@@ -4,7 +4,9 @@ import { AccountManager } from '../services/account-manager.js';
 import { SmtpService } from '../services/smtp-service.js';
 import { SpamService } from '../services/spam-service.js';
 import { MicrosoftOAuthService } from '../services/oauth-service.js';
+import { OutlookRulesService } from '../services/outlook-rules-service.js';
 import { accountTools } from './account-tools.js';
+import { outlookRulesTools } from './outlook-rules-tools.js';
 import { emailTools } from './email-tools.js';
 import { folderTools } from './folder-tools.js';
 import { spamTools } from './spam-tools.js';
@@ -41,6 +43,8 @@ export const READ_ONLY_TOOLS: readonly string[] = [
   'imap_check_spam',
   'imap_domain_stats',
   'imap_list_spam_domains',
+  // Outlook inbox rules (read; reads from graph.microsoft.com)
+  'imap_outlook_list_rules',
 ];
 
 /** Normalize a configured tool name: lowercase and add the `imap_` prefix if missing. */
@@ -133,7 +137,8 @@ export function registerTools(
   accountManager: AccountManager,
   smtpService: SmtpService,
   spamService: SpamService,
-  oauthService: MicrosoftOAuthService = new MicrosoftOAuthService(accountManager)
+  oauthService: MicrosoftOAuthService = new MicrosoftOAuthService(accountManager),
+  rulesService: OutlookRulesService = new OutlookRulesService(oauthService)
 ): void {
   const enabled = resolveEnabledTools();
 
@@ -163,6 +168,8 @@ export function registerTools(
 
   // Sweep (age-based filing by sender; dry-run by default, mutating otherwise)
   sweepTools(target, imapService, accountManager);
+  // Outlook.com / Microsoft 365 inbox rules via Microsoft Graph
+  outlookRulesTools(target, accountManager, oauthService, rulesService);
 
   if (enabled) {
     // Log to stderr only — stdout is the JSON-RPC channel.

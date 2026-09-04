@@ -2,7 +2,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   MicrosoftOAuthService,
   MICROSOFT_OAUTH_SCOPES,
+  MICROSOFT_GRAPH_RULES_SCOPES,
+  ConsentRequiredError,
+  allScopesGranted,
+  mergeScopes,
   resolveMicrosoftClientId,
+  scopeGranted,
   isValidTenant,
 } from '../src/services/oauth-service.js';
 import type { ImapAccount } from '../src/types/index.js';
@@ -274,5 +279,124 @@ describe('resolveMicrosoftClientId', () => {
     expect(resolveMicrosoftClientId('explicit', { IMAP_MCP_MS_CLIENT_ID: 'env' })).toBe('explicit');
     expect(resolveMicrosoftClientId(undefined, { IMAP_MCP_MS_CLIENT_ID: 'env' })).toBe('env');
     expect(() => resolveMicrosoftClientId(undefined, {})).toThrow(/IMAP_MCP_MS_CLIENT_ID/);
+  });
+});
+
+describe('MicrosoftOAuthService — Graph (second-resource) scopes', () => {
+  let updateOAuthTokens: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    updateOAuthTokens = vi.fn(async () => undefined);
+  });
+
+  it('mints a Graph token with the Graph scopes, keeps it in memory only, and persists a rotated refresh token', async () => {
+    const { svc, calls } = service([
+      { status: 200, body: { access_token: 'GRAPH-1', refresh_token: 'REFRESH-ROTATED', expires_in: 3600, scope: 'MailboxSettings.ReadWrite Mail.ReadBasic' } },
+    ]);
+    svc.setAccountManager({ updateOAuthTokens } as any);
+    const account = oauthAccount({ accessToken: 'MAIL-CACHED', accessTokenExpiresAt: 1_000_000 + 60 * 60 * 1000 });
+
+    const token = await svc.getValidAccessToken(account, MICROSOFT_GRAPH_RULES_SCOPES);
+
+    expect(token).toBe('GRAPH-1');
+    expect(calls[0].params.get('grant_type')).toBe('refresh_token');
+    expect(calls[0].params.get('scope')).toBe(MICROSOFT_GRAPH_RULES_SCOPES.join(' '));
+    // The persisted mail access token is untouched; the refresh token rotates for both.
+    expect(account.oauth?.accessToken).toBe('MAIL-CACHED');
+    expect(account.oauth?.refreshToken).toBe('REFRESH-ROTATED');
+    expect(updateOAuthTokens).toHaveBeenCalledTimes(1);
+    expect(updateOAuthTokens).toHaveBeenCalledWith('acc-ms', { refreshToken: 'REFRESH-ROTATED' });
+
+    // Second call for the same scope set is served from the in-memory cache.
+    expect(await svc.getValidAccessToken(account, MICROSOFT_GRAPH_RULES_SCOPES)).toBe('GRAPH-1');
+    expect(calls).toHaveLength(1);
+    // The mail token cache is independent.
+    expect(await svc.getValidAccessToken(account)).toBe('MAIL-CACHED');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('does not write the store when a Graph refresh returns no rotated refresh token', async () => {
+    const { svc } = service([{ status: 200, body: { access_token: 'GRAPH-2', expires_in: 3600 } }]);
+    svc.setAccountManager({ updateOAuthTokens } as any);
+    await svc.getValidAccessToken(oauthAccount(), MICROSOFT_GRAPH_RULES_SCOPES);
+    expect(updateOAuthTokens).not.toHaveBeenCalled();
+  });
+
+  it('refreshes a Graph token that is about to expire, sharing one refresh between concurrent callers', async () => {
+    const { svc, calls, advance } = service([
+      { status: 200, body: { access_token: 'GRAPH-A', expires_in: 3600 } },
+      { status: 200, body: { access_token: 'GRAPH-B', expires_in: 3600 } },
+    ]);
+    const account = oauthAccount();
+    await svc.getValidAccessToken(account, MICROSOFT_GRAPH_RULES_SCOPES);
+    advance(3600 * 1000 - 60 * 1000); // one minute left → inside the five-minute margin
+    const [a, b] = await Promise.all([
+      svc.getValidAccessToken(account, MICROSOFT_GRAPH_RULES_SCOPES),
+      svc.getValidAccessToken(account, MICROSOFT_GRAPH_RULES_SCOPES),
+    ]);
+    expect(a).toBe('GRAPH-B');
+    expect(b).toBe('GRAPH-B');
+    expect(calls).toHaveLength(2);
+  });
+
+  it('throws ConsentRequiredError (not the re-authorize-the-mailbox error) when Graph consent is missing', async () => {
+    const { svc } = service([
+      { status: 400, body: { error: 'invalid_grant', error_description: 'AADSTS65001: The user or administrator has not consented to use the application' } },
+    ]);
+    const err = await svc.getValidAccessToken(oauthAccount(), MICROSOFT_GRAPH_RULES_SCOPES).catch(e => e);
+    expect(err).toBeInstanceOf(ConsentRequiredError);
+    expect(err.code).toBe('consent_required');
+    expect(err.accountId).toBe('acc-ms');
+    expect(err.scopes).toEqual(MICROSOFT_GRAPH_RULES_SCOPES);
+    expect(err.message).toMatch(/AADSTS65001/);
+    expect(err.message).not.toMatch(/imap_add_oauth_account/);
+  });
+
+  it('still maps invalid_grant on the mail scopes to the mailbox re-authorization error', async () => {
+    const { svc } = service([{ status: 400, body: { error: 'invalid_grant', error_description: 'AADSTS70000' } }]);
+    const err = await svc.getValidAccessToken(oauthAccount()).catch(e => e);
+    expect(err).not.toBeInstanceOf(ConsentRequiredError);
+    expect(err.message).toMatch(/imap_add_oauth_account/);
+  });
+
+  it('primeAccessToken seeds the Graph cache but never the mail token; forgetResourceTokens clears it', async () => {
+    const { svc, calls } = service([{ status: 200, body: { access_token: 'GRAPH-FRESH', expires_in: 3600 } }]);
+    const account = oauthAccount({ accessToken: 'MAIL', accessTokenExpiresAt: 1_000_000 + 3_600_000 });
+
+    svc.primeAccessToken(account, MICROSOFT_GRAPH_RULES_SCOPES, 'GRAPH-PRIMED', 1_000_000 + 3_600_000);
+    svc.primeAccessToken(account, MICROSOFT_OAUTH_SCOPES, 'SHOULD-BE-IGNORED', 1_000_000 + 3_600_000);
+
+    expect(await svc.getValidAccessToken(account, MICROSOFT_GRAPH_RULES_SCOPES)).toBe('GRAPH-PRIMED');
+    expect(await svc.getValidAccessToken(account)).toBe('MAIL');
+    expect(calls).toHaveLength(0);
+
+    svc.forgetResourceTokens('acc-ms');
+    expect(await svc.getValidAccessToken(account, MICROSOFT_GRAPH_RULES_SCOPES)).toBe('GRAPH-FRESH');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('starts a device-code flow for the Graph scopes when asked', async () => {
+    const { svc, calls } = service([deviceCodeOk]);
+    await svc.startDeviceCode({ clientId: 'client-123', scopes: MICROSOFT_GRAPH_RULES_SCOPES, context: { kind: 'graph-consent' } });
+    expect(calls[0].params.get('scope')).toBe(MICROSOFT_GRAPH_RULES_SCOPES.join(' '));
+  });
+});
+
+describe('scope helpers', () => {
+  it('matches the full URI or the short name Microsoft reports for Graph scopes, case-insensitively', () => {
+    expect(scopeGranted(['MailboxSettings.ReadWrite', 'Mail.ReadBasic'], 'https://graph.microsoft.com/MailboxSettings.ReadWrite')).toBe(true);
+    expect(scopeGranted(['https://graph.microsoft.com/mailboxsettings.readwrite'], 'https://graph.microsoft.com/MailboxSettings.ReadWrite')).toBe(true);
+    expect(scopeGranted(['https://outlook.office.com/IMAP.AccessAsUser.All'], 'https://graph.microsoft.com/Mail.ReadBasic')).toBe(false);
+    expect(scopeGranted(undefined, 'x')).toBe(false);
+  });
+
+  it('allScopesGranted ignores offline_access and needs every other scope', () => {
+    expect(allScopesGranted(['MailboxSettings.ReadWrite', 'Mail.ReadBasic'], MICROSOFT_GRAPH_RULES_SCOPES)).toBe(true);
+    expect(allScopesGranted(['MailboxSettings.ReadWrite'], MICROSOFT_GRAPH_RULES_SCOPES)).toBe(false);
+    expect(allScopesGranted(MICROSOFT_OAUTH_SCOPES, MICROSOFT_GRAPH_RULES_SCOPES)).toBe(false);
+  });
+
+  it('mergeScopes unions case-insensitively, first spelling wins', () => {
+    expect(mergeScopes(['A', 'b'], ['a', 'C'], undefined)).toEqual(['A', 'b', 'C']);
   });
 });

@@ -22,6 +22,7 @@ const mockAccountManager = {
     return stored;
   }),
   updateAccount: vi.fn(async (id: string, updates: any) => ({ id, name: 'Old Name', ...updates })),
+  updateOAuthTokens: vi.fn(async () => undefined),
   getAccount: vi.fn((id: string) => storedAccounts.find(a => a.id === id)),
   getAllAccounts: vi.fn(() => storedAccounts),
 };
@@ -52,7 +53,15 @@ const mockOAuthService = {
     _context: opts.context,
   })),
   pollDeviceCode: vi.fn(async () => pollResult),
+  primeAccessToken: vi.fn(),
+  forgetResourceTokens: vi.fn(),
 };
+
+const GRAPH_SCOPES = [
+  'https://graph.microsoft.com/MailboxSettings.ReadWrite',
+  'https://graph.microsoft.com/Mail.ReadBasic',
+  'offline_access',
+];
 
 const parse = (result: any) => JSON.parse(result.content[0].text);
 
@@ -226,6 +235,104 @@ describe('OAuth account tools', () => {
       expect(result.connectionTest.hint).toMatch(/IMAP.AccessAsUser.All/);
     });
 
+    it('carries an earlier Graph consent over when a mailbox is re-authorized', async () => {
+      storedAccounts.push({
+        id: 'acc-old', name: 'Old Name', host: 'outlook.office365.com', port: 993, user: 'me@outlook.com', password: '', tls: true,
+        authType: 'oauth2',
+        oauth: {
+          provider: 'microsoft', clientId: 'client-123', tenant: 'consumers', refreshToken: 'r', scopes: tokens.scopes,
+          grantedScopes: [...tokens.scopes, 'MailboxSettings.ReadWrite', 'Mail.ReadBasic'],
+        },
+      });
+      pollResult = {
+        status: 'complete',
+        tokens,
+        context: {
+          accountId: 'acc-old', name: 'Old Name', email: 'me@outlook.com', host: 'outlook.office365.com', port: 993,
+          smtpHost: 'smtp-mail.outlook.com', smtpPort: 587, clientId: 'client-123', tenant: 'consumers',
+        },
+      };
+
+      const result = parse(await handlers.imap_complete_oauth_login({ flowId: 'flow-1' }));
+
+      expect(mockAccountManager.updateAccount).toHaveBeenCalledWith('acc-old', expect.objectContaining({
+        oauth: expect.objectContaining({
+          scopes: tokens.scopes,
+          grantedScopes: [...tokens.scopes, 'MailboxSettings.ReadWrite', 'Mail.ReadBasic'],
+        }),
+      }));
+      expect(mockOAuthService.forgetResourceTokens).toHaveBeenCalledWith('acc-old');
+      expect(result.oauth.graphRulesConsent).toBe(true);
+    });
+
+    it('finishes a graph-consent flow by widening the existing account, never creating one or returning tokens', async () => {
+      storedAccounts.push({
+        id: 'acc-ms', name: 'Outlook', host: 'outlook.office365.com', port: 993, user: 'me@outlook.com', password: '', tls: true,
+        authType: 'oauth2',
+        oauth: { provider: 'microsoft', clientId: 'client-123', tenant: 'consumers', refreshToken: 'REFRESH-OLD', scopes: tokens.scopes },
+      });
+      pollResult = {
+        status: 'complete',
+        tokens: {
+          accessToken: 'GRAPH-ACCESS-SECRET',
+          refreshToken: 'REFRESH-NEW-SECRET',
+          accessTokenExpiresAt: 1_800_000_000_000,
+          // Microsoft reports Graph scopes in short form.
+          scopes: ['MailboxSettings.ReadWrite', 'Mail.ReadBasic'],
+        },
+        context: { kind: 'graph-consent', accountId: 'acc-ms', scopes: GRAPH_SCOPES },
+      };
+
+      const raw = await handlers.imap_complete_oauth_login({ flowId: 'flow-1' });
+      const result = parse(raw);
+
+      expect(mockAccountManager.addAccount).not.toHaveBeenCalled();
+      expect(mockAccountManager.updateAccount).not.toHaveBeenCalled();
+      expect(mockAccountManager.updateOAuthTokens).toHaveBeenCalledWith('acc-ms', {
+        refreshToken: 'REFRESH-NEW-SECRET',
+        grantedScopes: [...tokens.scopes, 'MailboxSettings.ReadWrite', 'Mail.ReadBasic'],
+      });
+      // The Graph access token seeds the in-memory cache; the mail token is untouched.
+      expect(mockOAuthService.primeAccessToken).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'acc-ms' }), GRAPH_SCOPES, 'GRAPH-ACCESS-SECRET', 1_800_000_000_000,
+      );
+      expect(mockImapService.testConnection).not.toHaveBeenCalled();
+
+      expect(result).toMatchObject({
+        status: 'complete', success: true, kind: 'graph-consent', accountId: 'acc-ms',
+        graphRulesConsent: true, nextStep: 'imap_outlook_list_rules',
+      });
+      expect(raw.content[0].text).not.toContain('SECRET');
+    });
+
+    it('reports a graph-consent flow that Microsoft completed without the Graph scopes', async () => {
+      storedAccounts.push({
+        id: 'acc-ms', name: 'Outlook', host: 'h', port: 993, user: 'u', password: '', tls: true, authType: 'oauth2',
+        oauth: { provider: 'microsoft', clientId: 'c', tenant: 'consumers', refreshToken: 'r', scopes: tokens.scopes },
+      });
+      pollResult = {
+        status: 'complete',
+        tokens: { ...tokens, scopes: ['Mail.ReadBasic'] },
+        context: { kind: 'graph-consent', accountId: 'acc-ms', scopes: GRAPH_SCOPES },
+      };
+
+      const result = parse(await handlers.imap_complete_oauth_login({ flowId: 'flow-1' }));
+
+      expect(result.success).toBe(false);
+      expect(result.graphRulesConsent).toBe(false);
+      expect(result.message).toMatch(/MailboxSettings.ReadWrite/);
+      expect(result.nextStep).toBeUndefined();
+    });
+
+    it('fails a graph-consent flow cleanly when the account vanished meanwhile', async () => {
+      pollResult = {
+        status: 'complete', tokens,
+        context: { kind: 'graph-consent', accountId: 'gone', scopes: GRAPH_SCOPES },
+      };
+      await expect(handlers.imap_complete_oauth_login({ flowId: 'flow-1' })).rejects.toThrow(/no longer exists/);
+      expect(mockAccountManager.updateOAuthTokens).not.toHaveBeenCalled();
+    });
+
     it.each(['expired', 'denied', 'error'])('returns a structured %s result instead of throwing', async (status) => {
       pollResult = { status, error: `it went ${status}` };
       const result = parse(await handlers.imap_complete_oauth_login({ flowId: 'flow-1' }));
@@ -254,6 +361,7 @@ describe('OAuth account tools', () => {
       expect(result.accounts[0].oauth).toBeUndefined();
       expect(result.accounts[1].authType).toBe('oauth2');
       expect(result.accounts[1].oauth).toEqual({ provider: 'microsoft', tenant: 'consumers', clientId: 'client-123', scopes: ['s'] });
+      expect(result.accounts[1].oauth.grantedScopes).toBeUndefined();
       expect(raw.content[0].text).not.toContain('REFRESH-SECRET');
       expect(raw.content[0].text).not.toContain('ACCESS-SECRET');
       expect(raw.content[0].text).not.toContain('pw-secret');

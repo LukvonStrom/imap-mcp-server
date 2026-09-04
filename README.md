@@ -201,7 +201,13 @@ a one-time setup is needed to get an *Application (client) ID*:
 6. Open **API permissions → Add a permission → APIs my organization uses**,
    search for **Office 365 Exchange Online**, choose **Delegated permissions**,
    and add **`IMAP.AccessAsUser.All`** and **`SMTP.Send`**. (`offline_access`
-   is requested automatically at sign-in.)
+   is requested automatically at sign-in.) If you also want the assistant to
+   manage your **inbox rules** (see
+   [Outlook.com inbox rules (Graph)](#outlookcom-inbox-rules-graph)), add a
+   second permission set: **Add a permission → Microsoft Graph → Delegated
+   permissions**, then **`MailboxSettings.ReadWrite`** and **`Mail.ReadBasic`**.
+   Harmless if you never use the rules tools — consent for them is asked
+   separately.
 7. On the **Overview** page copy the **Application (client) ID**.
 
 Prefer the CLI? `scripts/register-entra-app.sh` does all seven steps with the
@@ -251,10 +257,76 @@ token expired or was revoked), the error tells you to run
 the tokens in place. The refresh token can also be supplied through
 `IMAP_MCP_ACCOUNT_<NAME>_OAUTH_REFRESH_TOKEN` (see above). For OAuth accounts
 the server additionally contacts `login.microsoftonline.com` for the token
-exchange and refresh — that is the only host besides your IMAP/SMTP servers.
+exchange and refresh — and, only when you use the inbox-rules tools below,
+`graph.microsoft.com`. Those are the only hosts besides your IMAP/SMTP servers.
 
 The web setup wizard does not run the OAuth flow; when you pick Outlook or
 Microsoft 365 there it points you to the tool flow above.
+
+### Outlook.com inbox rules (Graph)
+
+Outlook's **inbox rules** ("move mail from X to folder Y") are the only
+server-side automation Outlook.com / Microsoft 365 offers, and they are not
+reachable over IMAP — Microsoft exposes them solely through **Microsoft
+Graph**. The `imap_outlook_*` tools let the assistant list, create, change and
+delete those rules for an OAuth account, so a rule no longer has to be clicked
+together by hand in Outlook's settings. Typical flow: run
+`imap_export_messages` to see who floods the inbox, then have the assistant
+create the rules it suggests.
+
+**One extra consent.** A Microsoft access token is valid for one resource
+only, and the mailbox sign-in from `imap_add_oauth_account` covers IMAP/SMTP
+(the Exchange resource) but not Graph. The first time you use the rules tools
+they answer `{ "error": "graph-consent-required", "nextStep":
+"imap_outlook_authorize_rules" }`. The assistant then:
+
+1. calls **`imap_outlook_authorize_rules`** — same device-code dance as the
+   mailbox sign-in: you get https://microsoft.com/devicelogin and a code, sign
+   in to the same mailbox, and accept *Read and write your mailbox settings*
+   and *Read basic mail* (`MailboxSettings.ReadWrite`, `Mail.ReadBasic`);
+2. calls **`imap_complete_oauth_login`** with the returned `flowId`, which
+   stores the widened consent on the *existing* account (`grantedScopes`;
+   no new account is created — `imap_list_accounts` shows
+   `graphRulesConsent: true` afterwards).
+
+That is a one-off per account: the refresh token now covers both resources,
+and Graph tokens are minted from it on demand (kept in memory only). The app
+registration must list the two delegated Microsoft Graph permissions (step 6
+above; `scripts/register-entra-app.sh` adds them). Revoking the consent in
+your Microsoft account's *Apps and services* page removes both grants.
+
+Examples:
+
+> Move everything from linkedin.com to a "Newsletters" folder.
+
+→ `imap_outlook_create_rule` with `displayName: "LinkedIn → Newsletters"`,
+`senderContains: ["@linkedin.com"]`, `action: "move"`,
+`moveToFolder: "Newsletters"` (`createFolder: true` if the folder is new).
+
+> File Uber mail under Inbox/Uber, but keep the receipts in the inbox.
+
+→ `senderContains: ["@uber.com"]`, `exceptSubjectContains: ["receipt"]`,
+`action: "move"`, `moveToFolder: "Inbox/Uber"`.
+
+> Mark the weekly digest as read and low importance.
+
+→ `subjectContains: ["Weekly digest"]`, `action: "markRead"`,
+`markImportance: "low"`.
+
+Every condition is a case-insensitive substring; several values in one field
+are OR-ed, different fields are AND-ed. A rule **must** have at least one
+condition (one without would apply to all mail and is refused), and
+`action: "delete"` (to Deleted Items) needs `confirmDelete: true`.
+`moveToFolder` is a display path — `Newsletters` is a top-level folder (a
+sibling of Inbox, as in Outlook), `Inbox/Uber` a subfolder; well-known names
+(`Archive`, `Junk Email`, `Deleted Items`) work too.
+
+Limitations: Outlook's **Safe senders / Blocked senders** lists have no Graph
+API and stay manual (use a rule that moves or deletes instead), and Graph only
+manages rules on the **Inbox**, which is where Outlook keeps them anyway.
+Rules created here show up in Outlook's *Settings → Mail → Rules* and vice
+versa. Only rule definitions and folder names travel over the Graph
+connection — never message bodies.
 
 ### Supported Email Providers
 
@@ -401,7 +473,7 @@ The read-only subset is: `imap_list_accounts`, `imap_connect`, `imap_disconnect`
 `imap_get_latest_emails`, `imap_download_attachment`, `imap_find_thread_messages`,
 `imap_find_email_by_message_id`, `imap_export_messages`, `imap_list_folders`, `imap_folder_status`,
 `imap_get_unread_count`, `imap_check_spam`, `imap_domain_stats`,
-`imap_list_spam_domains`.
+`imap_list_spam_domains`, `imap_outlook_list_rules`.
 
 #### Tool annotations (client-side confirmation)
 
@@ -416,7 +488,7 @@ are exposed:
 | `readOnlyHint` | Nothing in the mailbox, the account store, or local config changes; safe to run without asking. | Exactly the `IMAP_MCP_READ_ONLY` subset above (attachment download and export write only to the local download directory). |
 | `destructiveHint` | The effect cannot be undone by this server — confirm before calling. | Every delete (`imap_delete_*`, `imap_bulk_delete*`, `imap_delete_folder`), `imap_remove_account`, sending mail (`imap_send_email`, `imap_reply_to_email`, `imap_forward_email`), and `imap_sweep` (it can delete; dry-run by default). |
 | `idempotentHint` | Repeating the call with the same arguments has no additional effect (a retry is harmless). | Reads, flag/keyword/move/folder edits, config edits. `false` for deletes, sends, drafts, uploads, exports, and adding accounts. |
-| `openWorldHint` | The tool reaches beyond your own mail server — third-party recipients or another host. | Sending mail and the Microsoft OAuth sign-in tools (`login.microsoftonline.com`). |
+| `openWorldHint` | The tool reaches beyond your own mail server — third-party recipients or another host. | Sending mail, the Microsoft OAuth sign-in tools (`login.microsoftonline.com`), and the Outlook inbox-rules tools `imap_outlook_*` (`graph.microsoft.com`) — including the read-only `imap_outlook_list_rules`. |
 
 Annotations are hints; they do not replace `IMAP_MCP_READ_ONLY` /
 `IMAP_MCP_ENABLED_TOOLS`, which remove tools from the list entirely. The
@@ -496,10 +568,14 @@ Once configured, the IMAP MCP server provides the following tools in Claude:
   ```
 
 - **imap_complete_oauth_login**: Step 2 — waits for the user to finish the
-  sign-in, stores the account with its encrypted tokens, and tests it.
+  sign-in, stores the account with its encrypted tokens, and tests it. Also
+  finishes a Graph consent started by `imap_outlook_authorize_rules`, in which
+  case it updates the existing account (`grantedScopes`) instead and returns
+  `{ status: "complete", kind: "graph-consent", accountId, grantedScopes,
+  graphRulesConsent }`.
   ```
   Parameters:
-  - flowId: The flowId from imap_add_oauth_account
+  - flowId: The flowId from imap_add_oauth_account or imap_outlook_authorize_rules
   - maxWaitSeconds: How long one call may wait (1–25, default 25; optional)
   Returns: { status: "pending", retryAfterSeconds } while the user has not
       finished (call again), or { status: "complete", accountId, ...,
@@ -509,7 +585,8 @@ Once configured, the IMAP MCP server provides the following tools in Claude:
 
 - **imap_list_accounts**: List all configured accounts. Each entry includes
   `authType` (`"password"` or `"oauth2"`); OAuth accounts also carry
-  `oauth: { provider, tenant, clientId, scopes }`. Tokens are never returned.
+  `oauth: { provider, tenant, clientId, scopes }` plus, once the Graph consent
+  exists, `grantedScopes` and `graphRulesConsent`. Tokens are never returned.
 
 - **imap_remove_account**: Remove an account
   ```
@@ -812,7 +889,7 @@ Once configured, the IMAP MCP server provides the following tools in Claude:
 
 ### Mailbox Export and Rule Analysis
 
-- **imap_export_messages**: Export per-message metadata for a whole mailbox (folder, uid, date, sender address/name/domain, recipients, subject, read/flagged/answered, size, attachment flag, List-Id/List-Unsubscribe, Message-ID — never bodies) to a JSONL or CSV file under `<download dir>/exports/`, and return aggregate statistics plus **rule candidates**. Use it to decide which server-side rules to create in Outlook.com (Settings → Mail → Rules) or Gmail without pulling every message through the conversation. Read-only for the mailbox.
+- **imap_export_messages**: Export per-message metadata for a whole mailbox (folder, uid, date, sender address/name/domain, recipients, subject, read/flagged/answered, size, attachment flag, List-Id/List-Unsubscribe, Message-ID — never bodies) to a JSONL or CSV file under `<download dir>/exports/`, and return aggregate statistics plus **rule candidates**. Use it to decide which server-side rules to create in Outlook.com (via `imap_outlook_create_rule`, or by hand in Settings → Mail → Rules) or Gmail without pulling every message through the conversation. Read-only for the mailbox.
   ```
   Parameters:
   - accountId: Account ID (or accountName)
@@ -831,6 +908,70 @@ Once configured, the IMAP MCP server provides the following tools in Claude:
   - summary: topSenders / topDomains / topLists with unread % and folder spread
   - ruleCandidates: sender domains, addresses and List-Ids with the evidence
       (messages, unread %, dominant folder) and a suggested rule
+  ```
+
+### Outlook.com Inbox Rules (Microsoft Graph)
+
+Only for accounts added with `imap_add_oauth_account` (Outlook.com / Microsoft
+365). See [Outlook.com inbox rules (Graph)](#outlookcom-inbox-rules-graph)
+for the one-time consent. Every tool returns
+`{ error: "graph-consent-required", nextStep: "imap_outlook_authorize_rules" }`
+until that consent exists, and a clear error for non-Microsoft accounts.
+
+- **imap_outlook_authorize_rules**: Start the extra Graph consent for an
+  existing OAuth account (device-code flow, step 1 of 2; finish with
+  `imap_complete_oauth_login`).
+  ```
+  Parameters:
+  - accountId OR accountName: Account identifier
+  Returns: { flowId, userCode, verificationUri, expiresAt, instructions }
+  ```
+
+- **imap_outlook_list_rules**: List the inbox rules — id, displayName,
+  sequence, isEnabled, conditions, actions, exceptions. Move/copy targets are
+  folder ids; `moveToFolderPath` / `copyToFolderPath` carry the display path
+  when the folder hierarchy can be read. Read-only.
+  ```
+  Parameters:
+  - accountId OR accountName: Account identifier
+  ```
+
+- **imap_outlook_create_rule**: Create a rule. At least one condition is
+  required; `action: "delete"` requires `confirmDelete: true`.
+  ```
+  Parameters:
+  - accountId OR accountName: Account identifier
+  - displayName: Rule name as shown in Outlook
+  - senderContains: Substrings of the sender address/name, e.g. "@linkedin.com" (OR-ed)
+  - fromAddresses: Exact sender addresses
+  - subjectContains, bodyOrSubjectContains, headerContains: Substring conditions
+  - exceptSubjectContains, exceptSenderContains, exceptFromAddresses: Exceptions
+  - action: "move" | "markRead" | "moveAndMarkRead" | "delete"
+  - moveToFolder: Display path ("Newsletters", "Inbox/Uber", "Archive"); required for move actions
+  - createFolder: Create moveToFolder (and missing parents) if absent (default: false)
+  - markImportance: "low" | "normal" | "high" (optional)
+  - stopProcessingRules: Stop evaluating later rules on a match (default: true)
+  - confirmDelete: Must be true for action "delete"
+  - isEnabled: Active immediately (default: true)
+  - sequence: Evaluation order, 1 first (default: after the existing rules)
+  Returns: the created rule (with moveToFolderPath) and createdFolders when any were made
+  ```
+
+- **imap_outlook_update_rule**: Change a rule. Only passed fields change; a
+  condition/exception field replaces that one predicate (empty list removes
+  it), `action` rebuilds the actions, `isEnabled: false` pauses the rule.
+  ```
+  Parameters:
+  - accountId OR accountName, ruleId (from imap_outlook_list_rules)
+  - displayName, isEnabled, sequence, and any create-rule condition / action field
+  ```
+
+- **imap_outlook_delete_rule**: Delete a rule permanently. **Destructive** —
+  confirm with the user; the rule definition cannot be recovered (mail it
+  already filed is untouched).
+  ```
+  Parameters:
+  - accountId OR accountName, ruleId
   ```
 
 ### Folder Operations
@@ -924,12 +1065,15 @@ src/
 ├── services/
 │   ├── imap-service.ts    # IMAP connection management
 │   ├── smtp-service.ts    # SMTP service for sending emails
+│   ├── oauth-service.ts   # Microsoft device-code flow + token refresh
+│   ├── outlook-rules-service.ts # Microsoft Graph client for inbox rules
 │   └── account-manager.ts # Account configuration
 ├── tools/
 │   ├── index.ts          # Tool registration
 │   ├── account-tools.ts  # Account management tools
 │   ├── email-tools.ts    # Email operation tools (including send/reply/forward)
 │   ├── folder-tools.ts   # Folder operation tools
+│   ├── outlook-rules-tools.ts # Outlook.com inbox rules (Graph)
 │   └── sweep-tools.ts    # imap_sweep: age-based filing by sender (dry-run by default)
 └── types/
     └── index.ts          # TypeScript type definitions

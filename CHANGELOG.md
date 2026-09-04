@@ -8,6 +8,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] — LukvonStrom fork
 
 ### Added
+- **Outlook.com / Microsoft 365 inbox rules via Microsoft Graph.** Five new
+  tools let the assistant manage the server-side rules that Outlook otherwise
+  only exposes in its settings UI: `imap_outlook_authorize_rules` (one-time
+  extra consent, device-code flow finished by `imap_complete_oauth_login`),
+  `imap_outlook_list_rules`, `imap_outlook_create_rule`,
+  `imap_outlook_update_rule`, `imap_outlook_delete_rule`. Create takes flat,
+  LLM-oriented inputs (`senderContains`, `fromAddresses`, `subjectContains`,
+  `bodyOrSubjectContains`, `headerContains`, `except*`, `action`
+  move / markRead / moveAndMarkRead / delete, `moveToFolder` as a display path
+  with optional `createFolder`) and refuses condition-less rules and
+  unconfirmed delete actions. Only works for `authType: "oauth2"` Microsoft
+  accounts; while Graph consent is missing the tools return
+  `{ error: "graph-consent-required", nextStep: "imap_outlook_authorize_rules" }`.
+  - `MicrosoftOAuthService.getValidAccessToken` / `refreshAccessToken` /
+    `forceRefresh` take an optional scope set: Microsoft access tokens are
+    bound to one resource, so Graph tokens are minted from the same refresh
+    token and cached in memory per (account, scope set) — the persisted mail
+    token is unchanged. A refresh for a non-mail set that fails with
+    `invalid_grant` / `AADSTS65001` throws `ConsentRequiredError`. New
+    `OAuthConfig.grantedScopes` (not encrypted — scope names) records the
+    full consent; `imap_list_accounts` reports it plus `graphRulesConsent`.
+  - New `OutlookRulesService` (`src/services/outlook-rules-service.ts`).
+    Second and last new outbound host: `graph.microsoft.com` (README,
+    SECURITY.md, AGENTS.md rule 4). `scripts/register-entra-app.sh` and the
+    README app-registration steps add the delegated Graph permissions
+    `MailboxSettings.ReadWrite` and `Mail.ReadBasic`.
+  - Tests: `tests/outlook-rules-service.test.ts`,
+    `tests/outlook-rules-tools.test.ts`, Graph-scope cases in
+    `tests/oauth-service.test.ts`, consent-only completion in
+    `tests/account-tools-oauth.test.ts`; `tests/tool-annotations.test.ts`
+    now expects the five Graph tools in the open-world set.
 - `imap_export_messages`: export per-message metadata (never bodies) for a whole
   mailbox to JSONL/CSV under `<download dir>/exports/`, with sender/domain/list
   statistics and rule candidates for building Outlook.com / Gmail server-side rules.
